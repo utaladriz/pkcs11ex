@@ -1,0 +1,33 @@
+[package]
+name = "pkcs11ex_nif"
+version = "0.0.1"
+edition = "2021"
+authors = ["utaladriz <utaladriz@gmail.com>"]
+license = "Apache-2.0"
+description = "Native PKCS#11 bridge for the pkcs11ex Elixir library."
+repository = "https://github.com/utaladriz/pkcs11ex"
+publish = false
+
+[lib]
+name = "pkcs11ex_nif"
+path = "src/lib.rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+rustler = "0.37"
+cryptoki = "0.12"        # PKCS#11 safe abstraction (>= 0.7 per spec)
+zeroize = "1.8"          # PIN / secret memory wiping (Phase 2)
+sha2 = "0.10"            # Driver SHA-256 pinning + future digest paths
+
+# Reserved for later phases:
+# thiserror = "2"         # Typed error enum (Phase 1.3 once enum surfaces stabilize)
+# tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
+# parking_lot = "0.12"    # Mutex used for PIN-protected single-session-pinned slots
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+
+[profile.dev]
+opt-level = 0

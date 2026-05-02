@@ -1,0 +1,34 @@
+# Elixir / Mix
+/_build/
+/cover/
+/deps/
+/doc/
+/.fetch
+erl_crash.dump
+*.ez
+pkcs11ex-*.tar
+/tmp/
+
+# Editors / language servers
+.elixir_ls/
+.elixir-ls/
+.lexical/
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+
+# Rust
+/native/*/target/
+**/*.rs.bk
+*.pdb
+
+# Mix copies the built NIF library here at compile time; not source.
+/priv/native/
+
+# Local-only configuration (never commit)
+/.envrc
+/.env
+/.env.*
+config/*.local.exs
