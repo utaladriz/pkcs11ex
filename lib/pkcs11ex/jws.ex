@@ -71,11 +71,24 @@ defmodule Pkcs11ex.JWS do
 
   # ---------- Audit hook ----------
 
-  # Off by default — only fires when `:audit_to` is set. The PIN / signer ref
-  # / payload hash all flow into the entry; the JWS itself is recorded so
-  # the chain is sufficient on its own (no need to retain the original
-  # detached payload to reconstruct what was signed at audit time, since
-  # the JWS payload hash binds it).
+  # `pkcs11ex_audit` is an optional dep. When the lib isn't loaded — the app
+  # didn't pull it in or this is a verify-only deployment — the `Pkcs11ex.Audit`
+  # module won't exist at all. We dispatch via `apply/3` (no compile-time
+  # symbol reference) and gate on `Code.ensure_loaded?/1` so:
+  #
+  #   - `:audit_to` absent           → skip silently, return :ok.
+  #   - `:audit_to` set, lib missing → return :pkcs11ex_audit_not_loaded so
+  #                                    the caller knows the JWS was produced
+  #                                    but not recorded.
+  #   - `:audit_to` set, lib loaded  → call `Pkcs11ex.Audit.append/3`.
+  #
+  # The `@compile {:no_warn_undefined, ...}` suppresses the inevitable
+  # "module not loaded" warning that the Elixir compiler would otherwise
+  # emit during compile of a pkcs11ex consumer that doesn't include
+  # pkcs11ex_audit.
+
+  @compile {:no_warn_undefined, [Pkcs11ex.Audit]}
+
   defp maybe_audit(_jws, _payload_bin, _alg, opts) when not is_list(opts), do: :ok
 
   defp maybe_audit(jws, payload_bin, alg, opts) do
@@ -83,8 +96,12 @@ defmodule Pkcs11ex.JWS do
       nil ->
         :ok
 
-      %Pkcs11ex.Audit{} = audit ->
-        do_audit(audit, jws, payload_bin, alg, opts)
+      audit ->
+        if Code.ensure_loaded?(Pkcs11ex.Audit) do
+          do_audit(audit, jws, payload_bin, alg, opts)
+        else
+          {:error, {:audit_failed, :pkcs11ex_audit_not_loaded}}
+        end
     end
   end
 
@@ -104,7 +121,7 @@ defmodule Pkcs11ex.JWS do
         _ -> base
       end
 
-    case Pkcs11ex.Audit.append(audit, payload) do
+    case apply(Pkcs11ex.Audit, :append, [audit, payload]) do
       {:ok, _entry} -> :ok
       {:error, reason} -> {:error, {:audit_failed, reason}}
     end
