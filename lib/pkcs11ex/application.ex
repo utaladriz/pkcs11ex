@@ -15,9 +15,16 @@ defmodule Pkcs11ex.Application do
       # PinnedRegistry is started unconditionally (lightweight: one GenServer +
       # one ETS table). Deployments that use a different :trust_policy can
       # leave it idle; deployments that swap in/out at runtime get it for free.
-      Pkcs11ex.Policy.PinnedRegistry
-      # Phase 1 will add:
-      #   - Pkcs11ex.SlotSupervisor (per-slot session pools)
+      Pkcs11ex.Policy.PinnedRegistry,
+
+      # Slot server registry — name-resolves :slot_ref → pid for the
+      # per-slot GenServers under SlotSupervisor.
+      {Registry, keys: :unique, name: Pkcs11ex.Slot.Registry},
+
+      # Per-slot GenServers, one per entry in Pkcs11ex.Config :slots.
+      # Empty config (verify-only deployments) is fine — the supervisor
+      # just has no children.
+      Pkcs11ex.SlotSupervisor
     ]
 
     opts = [strategy: :one_for_one, name: Pkcs11ex.Supervisor]

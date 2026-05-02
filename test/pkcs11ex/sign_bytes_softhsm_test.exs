@@ -47,48 +47,10 @@ defmodule Pkcs11ex.SignBytesSofthsmTest do
     user_pin = "1234"
     so_pin = "1234"
 
-    {init_output, 0} =
-      System.cmd(
-        softhsm2_util,
-        [
-          "--init-token",
-          "--free",
-          "--label",
-          token_label,
-          "--pin",
-          user_pin,
-          "--so-pin",
-          so_pin
-        ],
-        stderr_to_stdout: true
-      )
+    slot_id = Pkcs11ex.Test.SoftHSM.init_token!(softhsm2_util, token_label, user_pin, so_pin)
+    on_exit(fn -> Pkcs11ex.Test.SoftHSM.delete_token(softhsm2_util, token_label) end)
 
-    on_exit(fn ->
-      _ =
-        System.cmd(
-          softhsm2_util,
-          ["--delete-token", "--token", token_label],
-          stderr_to_stdout: true
-        )
-    end)
-
-    {:ok, pkcs11_module} = Native.module_load(driver)
-    {:ok, slots} = Native.list_slots(pkcs11_module)
-
-    slot_id =
-      case Enum.find(slots, &(&1.token_label == token_label)) do
-        %{slot_id: id} ->
-          id
-
-        nil ->
-          raise """
-          Token #{inspect(token_label)} not found by NIF after init.
-          softhsm2-util output: #{init_output}
-          slots seen by NIF: #{inspect(slots)}
-          (See SOFTHSM2_CONF in your shell — the BEAM-side process env may not reach `dlopen`'d libs.)
-          """
-      end
-
+    pkcs11_module = Pkcs11ex.Test.SoftHSM.module()
     {:ok, true} = Native.generate_rsa_keypair(pkcs11_module, slot_id, user_pin, key_label, 2048)
 
     {:ok, pkcs11_module: pkcs11_module, slot_id: slot_id, pin: user_pin, key_label: key_label, token_label: token_label}

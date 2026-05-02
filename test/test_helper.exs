@@ -17,6 +17,80 @@ defmodule Pkcs11ex.Test.SoftHSM do
 
   @doc "Returns true when the SoftHSM2 driver is locally available."
   def available?, do: driver_path() != nil
+
+  @doc """
+  Returns a fresh `Pkcs11ex.Native` module resource for SoftHSM2.
+
+  PKCS#11 mandates one `C_Initialize` per process per `.so`. Each test gets
+  its own Module via this function; between tests, the previous Module's
+  ResourceArc must be released (process dies + GC) before `C_Initialize`
+  can succeed again. We force `:erlang.garbage_collect/0` ahead of the load
+  to flush any orphan resources.
+
+  SoftHSM2 also caches the slot list at C_Initialize time — see
+  `init_token!/4` for the workaround.
+  """
+  def module do
+    if path = driver_path() do
+      load_with_retries(path, 5)
+    end
+  end
+
+  defp load_with_retries(_path, 0), do: raise("module_load failed after retries")
+
+  defp load_with_retries(path, attempts_left) do
+    case Pkcs11ex.Native.module_load(path) do
+      {:ok, m} ->
+        m
+
+      {:error, _} ->
+        force_gc_all()
+        Process.sleep(50)
+        load_with_retries(path, attempts_left - 1)
+    end
+  end
+
+  defp force_gc_all do
+    Enum.each(Process.list(), fn pid ->
+      try do
+        :erlang.garbage_collect(pid)
+      rescue
+        _ -> :ok
+      end
+    end)
+  end
+
+  @doc """
+  Initialize a fresh SoftHSM2 token via `softhsm2-util` and return its slot id.
+
+  Parses `--init-token` stdout for the reassigned slot id rather than calling
+  `Pkcs11ex.Native.list_slots/1` afterwards — cryptoki's `Slot::try_from(slot_id)`
+  works for any valid slot id whether or not it's in the cached list.
+  """
+  def init_token!(softhsm2_util, label, user_pin, so_pin) do
+    {out, 0} =
+      System.cmd(
+        softhsm2_util,
+        ["--init-token", "--free", "--label", label, "--pin", user_pin, "--so-pin", so_pin],
+        stderr_to_stdout: true
+      )
+
+    case Regex.run(~r/reassigned to slot (\d+)/, out) do
+      [_, slot_str] ->
+        String.to_integer(slot_str)
+
+      _ ->
+        raise "softhsm2-util didn't report a reassigned slot id; output: #{out}"
+    end
+  end
+
+  @doc "Counterpart to init_token!/4 — best-effort cleanup of a token by label."
+  def delete_token(softhsm2_util, label) do
+    _ =
+      System.cmd(softhsm2_util, ["--delete-token", "--token", label], stderr_to_stdout: true)
+
+    :ok
+  end
 end
 
 excludes =

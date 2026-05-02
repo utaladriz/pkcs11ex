@@ -18,11 +18,11 @@ rustler = "0.37"
 cryptoki = "0.12"        # PKCS#11 safe abstraction (>= 0.7 per spec)
 zeroize = "1.8"          # PIN / secret memory wiping (Phase 2)
 sha2 = "0.10"            # Driver SHA-256 pinning + future digest paths
+parking_lot = "0.12"     # Mutex around cryptoki::Session for single-session-pinned slots
 
 # Reserved for later phases:
 # thiserror = "2"         # Typed error enum (Phase 1.3 once enum surfaces stabilize)
 # tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
-# parking_lot = "0.12"    # Mutex used for PIN-protected single-session-pinned slots
 
 [profile.release]
 opt-level = 3

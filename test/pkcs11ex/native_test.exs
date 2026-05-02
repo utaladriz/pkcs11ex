@@ -63,8 +63,7 @@ defmodule Pkcs11ex.NativeTest do
     @describetag :softhsm
 
     setup do
-      driver = Pkcs11ex.Test.SoftHSM.driver_path()
-      {:ok, module} = Native.module_load(driver)
+      module = Pkcs11ex.Test.SoftHSM.module()
       {:ok, module: module}
     end
 

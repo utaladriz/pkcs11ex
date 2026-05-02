@@ -11,14 +11,16 @@
 use cryptoki::context::{CInitializeArgs, CInitializeFlags, Pkcs11};
 use cryptoki::mechanism::rsa::{PkcsMgfType, PkcsPssParams};
 use cryptoki::mechanism::{Mechanism, MechanismType};
-use cryptoki::object::{Attribute, AttributeType, KeyType, ObjectClass, ObjectHandle};
-use cryptoki::session::{Session, UserType};
+use cryptoki::object::{Attribute, AttributeType, CertificateType, KeyType, ObjectClass, ObjectHandle};
+use cryptoki::session::{Session as CkSession, UserType};
 use cryptoki::slot::Slot;
 use cryptoki::types::AuthPin;
+use parking_lot::Mutex;
 use rustler::{Binary, Encoder, Env, NifStruct, Resource, ResourceArc, Term};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::panic::{RefUnwindSafe, UnwindSafe};
+use zeroize::Zeroizing;
 
 mod atoms {
     rustler::atoms! {
@@ -45,6 +47,25 @@ impl UnwindSafe for Module {}
 
 #[rustler::resource_impl]
 impl Resource for Module {}
+
+/// Owns a PKCS#11 session for the lifetime of the resource.
+///
+/// Wrapped in `parking_lot::Mutex` because PKCS#11 sessions are NOT thread-safe
+/// per the standard — at most one thread may use a given session concurrently.
+/// The Mutex makes `Session` `Sync` (Rustler's resource requirement) and
+/// serializes access. For PIN-protected token slots this matches the spec's
+/// "single-session-pinned" model. For cloud HSM slots that benefit from
+/// parallel sessions, a per-slot pool of these resources can be added later
+/// without changing this type.
+pub struct Session {
+    inner: Mutex<CkSession>,
+}
+
+impl RefUnwindSafe for Session {}
+impl UnwindSafe for Session {}
+
+#[rustler::resource_impl]
+impl Resource for Session {}
 
 // ---------- Errors ----------
 
@@ -93,6 +114,19 @@ impl Encoder for Error {
 // ---------- Encodable structs ----------
 
 #[derive(NifStruct)]
+#[module = "Pkcs11ex.Native.RsaPrivateComponents"]
+pub struct RsaPrivateComponents {
+    pub modulus: Vec<u8>,
+    pub public_exponent: Vec<u8>,
+    pub private_exponent: Vec<u8>,
+    pub prime1: Vec<u8>,
+    pub prime2: Vec<u8>,
+    pub exponent1: Vec<u8>,
+    pub exponent2: Vec<u8>,
+    pub coefficient: Vec<u8>,
+}
+
+#[derive(NifStruct)]
 #[module = "Pkcs11ex.Native.SlotInfo"]
 pub struct SlotInfo {
     pub slot_id: u64,
@@ -122,7 +156,7 @@ fn slot_for(slot_id: u64) -> Result<Slot, Error> {
     Slot::try_from(slot_id).map_err(|_| Error::SlotInvalid(slot_id))
 }
 
-fn open_session(module: &Module, slot_id: u64, pin: &str) -> Result<Session, Error> {
+fn open_session(module: &Module, slot_id: u64, pin: &str) -> Result<CkSession, Error> {
     let slot = slot_for(slot_id)?;
     let session = module.pkcs11.open_rw_session(slot)?;
 
@@ -144,7 +178,7 @@ fn build_mechanism(name: &str) -> Result<Mechanism<'_>, Error> {
     }
 }
 
-fn find_key(session: &Session, class: ObjectClass, label: &str) -> Result<ObjectHandle, Error> {
+fn find_key(session: &CkSession, class: ObjectClass, label: &str) -> Result<ObjectHandle, Error> {
     let template = vec![
         Attribute::Class(class),
         Attribute::Label(label.as_bytes().to_vec()),
@@ -267,6 +301,96 @@ fn verify(
     }
 }
 
+// ---------- Stateful session NIFs (Phase 2) ----------
+
+/// Opens a long-lived RW session against a slot. The returned resource lives
+/// until either it goes out of scope (Drop runs `C_CloseSession` via cryptoki)
+/// or `session_close/1` is called explicitly.
+#[rustler::nif(schedule = "DirtyIo")]
+fn session_open(module: ResourceArc<Module>, slot_id: u64) -> Result<ResourceArc<Session>, Error> {
+    let slot = slot_for(slot_id)?;
+    let ck_session = module.pkcs11.open_rw_session(slot)?;
+    Ok(ResourceArc::new(Session {
+        inner: Mutex::new(ck_session),
+    }))
+}
+
+/// Calls `C_Login(CKU_USER, pin)` on the session.
+///
+/// PIN handling is the layered model from `specs.md` §5.2:
+///   - The Erlang binary backing `pin` is BEAM-managed and **cannot** be
+///     wiped from Rust. Applications keep its lifetime short by passing it
+///     directly from a `pin_callback` and never storing it.
+///   - Rust copies the bytes once into a `Zeroizing<Vec<u8>>` which is
+///     wiped on drop. The cryptoki `AuthPin` (a `SecretString`) zeroizes
+///     its internal buffer on drop too. Both are dropped at the end of
+///     this function.
+///
+/// Calling on an already-logged-in session returns `CKR_USER_ALREADY_LOGGED_IN`
+/// from cryptoki — propagated so the Elixir side can recover.
+#[rustler::nif(schedule = "DirtyIo")]
+fn session_login(session: ResourceArc<Session>, pin: Binary<'_>) -> Result<bool, Error> {
+    let lock = session.inner.lock();
+
+    let pin_bytes: Zeroizing<Vec<u8>> = Zeroizing::new(pin.as_slice().to_vec());
+    let pin_str = std::str::from_utf8(&pin_bytes)
+        .map_err(|_| Error::Pkcs11("PIN must be valid UTF-8".into()))?;
+
+    let auth = AuthPin::new(pin_str.to_string().into_boxed_str());
+    lock.login(UserType::User, Some(&auth))?;
+    Ok(true)
+}
+
+/// Calls `C_Logout` on the session. Does not close the session itself.
+#[rustler::nif(schedule = "DirtyIo")]
+fn session_logout(session: ResourceArc<Session>) -> Result<bool, Error> {
+    let lock = session.inner.lock();
+    lock.logout()?;
+    Ok(true)
+}
+
+/// Sign with a key found by label in the given session's slot. Acquires the
+/// session mutex for the duration of the operation, serializing concurrent
+/// sign requests through the same session (the PKCS#11 thread-safety rule).
+#[rustler::nif(schedule = "DirtyIo")]
+fn sign_with_session(
+    session: ResourceArc<Session>,
+    mechanism: String,
+    key_label: String,
+    data: Binary<'_>,
+) -> Result<Vec<u8>, Error> {
+    let lock = session.inner.lock();
+    let mech = build_mechanism(&mechanism)?;
+    let key = find_key(&lock, ObjectClass::PRIVATE_KEY, &key_label)?;
+    let signature = lock.sign(&mech, key, data.as_slice())?;
+    Ok(signature)
+}
+
+/// Verify with a key found by label in the given session's slot. Acquires
+/// the session mutex for the duration. Verification is a public-key
+/// operation — no login required — but we still go through the session
+/// because the cryptoki API is session-based.
+#[rustler::nif(schedule = "DirtyIo")]
+fn verify_with_session(
+    session: ResourceArc<Session>,
+    mechanism: String,
+    key_label: String,
+    data: Binary<'_>,
+    signature: Binary<'_>,
+) -> Result<bool, Error> {
+    let lock = session.inner.lock();
+    let mech = build_mechanism(&mechanism)?;
+    let key = find_key(&lock, ObjectClass::PUBLIC_KEY, &key_label)?;
+
+    match lock.verify(&mech, key, data.as_slice(), signature.as_slice()) {
+        Ok(()) => Ok(true),
+        Err(cryptoki::error::Error::Pkcs11(cryptoki::error::RvError::SignatureInvalid, _)) => {
+            Err(Error::SignatureInvalid)
+        }
+        Err(e) => Err(Error::from(e)),
+    }
+}
+
 /// Test-only helper: read the modulus and public exponent of an RSA public
 /// key on the slot. Used by JWS round-trip tests to build a self-signed
 /// certificate that wraps the SoftHSM-resident key, so software-side verify
@@ -344,6 +468,79 @@ fn generate_rsa_keypair(
         &private_template,
     )?;
 
+    Ok(true)
+}
+
+// ---------- Provisioning NIFs (Mix task only) ----------
+
+/// Import an RSA private key into the slot's session.
+///
+/// Used exclusively by `mix pkcs11ex.import_p12` for provisioning. The
+/// caller is responsible for not leaking the components beyond the import
+/// flow — this NIF takes them as plain `Vec<u8>` rather than zeroizing
+/// containers because they're already plaintext on the calling stack.
+///
+/// `id` is a `CKA_ID` byte string; pass an empty binary to omit.
+#[rustler::nif(schedule = "DirtyIo")]
+fn import_rsa_private_key(
+    session: ResourceArc<Session>,
+    label: String,
+    id: Binary<'_>,
+    components: RsaPrivateComponents,
+) -> Result<bool, Error> {
+    let lock = session.inner.lock();
+
+    let mut template = vec![
+        Attribute::Class(ObjectClass::PRIVATE_KEY),
+        Attribute::KeyType(KeyType::RSA),
+        Attribute::Token(true),
+        Attribute::Sign(true),
+        Attribute::Sensitive(true),
+        Attribute::Extractable(false),
+        Attribute::Label(label.into_bytes()),
+        Attribute::Modulus(components.modulus),
+        Attribute::PublicExponent(components.public_exponent),
+        Attribute::PrivateExponent(components.private_exponent),
+        Attribute::Prime1(components.prime1),
+        Attribute::Prime2(components.prime2),
+        Attribute::Exponent1(components.exponent1),
+        Attribute::Exponent2(components.exponent2),
+        Attribute::Coefficient(components.coefficient),
+    ];
+
+    if !id.is_empty() {
+        template.push(Attribute::Id(id.as_slice().to_vec()));
+    }
+
+    let _ = lock.create_object(&template)?;
+    Ok(true)
+}
+
+/// Import an X.509 certificate into the slot's session.
+#[rustler::nif(schedule = "DirtyIo")]
+fn import_x509_certificate(
+    session: ResourceArc<Session>,
+    label: String,
+    id: Binary<'_>,
+    subject_der: Binary<'_>,
+    cert_der: Binary<'_>,
+) -> Result<bool, Error> {
+    let lock = session.inner.lock();
+
+    let mut template = vec![
+        Attribute::Class(ObjectClass::CERTIFICATE),
+        Attribute::CertificateType(CertificateType::X_509),
+        Attribute::Token(true),
+        Attribute::Label(label.into_bytes()),
+        Attribute::Subject(subject_der.as_slice().to_vec()),
+        Attribute::Value(cert_der.as_slice().to_vec()),
+    ];
+
+    if !id.is_empty() {
+        template.push(Attribute::Id(id.as_slice().to_vec()));
+    }
+
+    let _ = lock.create_object(&template)?;
     Ok(true)
 }
 

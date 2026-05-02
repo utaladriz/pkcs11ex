@@ -52,23 +52,11 @@ defmodule Pkcs11ex.JWSSofthsmTest do
     user_pin = "1234"
     so_pin = "1234"
 
-    {_out, 0} =
-      System.cmd(
-        softhsm2_util,
-        ["--init-token", "--free", "--label", token_label, "--pin", user_pin, "--so-pin", so_pin],
-        stderr_to_stdout: true
-      )
+    slot_id = Pkcs11ex.Test.SoftHSM.init_token!(softhsm2_util, token_label, user_pin, so_pin)
 
-    on_exit(fn ->
-      _ =
-        System.cmd(softhsm2_util, ["--delete-token", "--token", token_label], stderr_to_stdout: true)
-    end)
+    on_exit(fn -> Pkcs11ex.Test.SoftHSM.delete_token(softhsm2_util, token_label) end)
 
-    {:ok, pkcs11_module} = Native.module_load(driver)
-    {:ok, slots} = Native.list_slots(pkcs11_module)
-
-    %{slot_id: slot_id} = Enum.find(slots, &(&1.token_label == token_label))
-
+    pkcs11_module = Pkcs11ex.Test.SoftHSM.module()
     {:ok, true} = Native.generate_rsa_keypair(pkcs11_module, slot_id, user_pin, key_label, 2048)
 
     # Export the public key components and build a wrapper cert for x5c.

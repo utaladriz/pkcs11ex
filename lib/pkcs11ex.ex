@@ -9,12 +9,21 @@ defmodule Pkcs11ex do
   See `docs/specs/specs.md` for architecture and `docs/specs/api.md` for the
   full public API specification.
 
-  ## Phase 1 surface
+  ## Surface
 
-  The current implementation requires explicit `:module`, `:slot_id`,
-  `:key_label`, and (for token slots) `:pin` options. Config-driven
-  `signer_ref` resolution lands in a later step once the slot supervisor and
-  PIN-callback machinery are in place.
+  Two paths into a sign:
+
+    * **Signer-ref (`:signer`, recommended)** — `signer: {slot_ref, key_ref}`
+      resolves through the running `Pkcs11ex.Slot.Server` for that slot,
+      which holds the persistent session, applies the configured
+      `pin_callback`, and routes through the single-session-pinned model
+      from `specs.md` §5.2. Atom shorthand: `signer: :key_ref` resolves
+      against `default_slot` from `Pkcs11ex.Application.config/0`.
+
+    * **Explicit (legacy / one-shot)** — pass `module:`, `slot_id:`,
+      `key_label:`, and (for token slots) `pin:` directly. Opens a fresh
+      session per call. Useful for scripts and tests; production should
+      prefer `:signer`.
   """
 
   alias Pkcs11ex.Algorithm
@@ -60,7 +69,7 @@ defmodule Pkcs11ex do
          :ok <- check_alg_allowed(alg),
          {:ok, adapter} <- Algorithm.lookup(alg),
          {:ok, mechanism} <- mechanism_string(adapter, :sign),
-         {:ok, raw} <- run_sign(opts, mechanism, IO.iodata_to_binary(data)),
+         {:ok, raw} <- dispatch_sign(opts, adapter, mechanism, IO.iodata_to_binary(data)),
          ctx <- Keyword.get(opts, :encoding_context, :der),
          {:ok, encoded} <- adapter.encode_signature(raw, ctx) do
       {:ok, encoded}
@@ -118,6 +127,78 @@ defmodule Pkcs11ex do
 
   defp mechanism_string(adapter, :sign), do: {:ok, Atom.to_string(adapter.signing_mechanism())}
   defp mechanism_string(adapter, :verify), do: {:ok, Atom.to_string(adapter.verifying_mechanism())}
+
+  # Choose between the persistent-session signer-ref path (preferred) and the
+  # legacy explicit-opts path (per-call session). Signer-ref wins when present.
+  defp dispatch_sign(opts, adapter, mechanism, data) do
+    cond do
+      Keyword.has_key?(opts, :signer) ->
+        sign_via_signer(opts, adapter, data)
+
+      Keyword.has_key?(opts, :module) ->
+        run_sign(opts, mechanism, data)
+
+      true ->
+        {:error, :no_signer_specified}
+    end
+  end
+
+  defp sign_via_signer(opts, adapter, data) do
+    with {:ok, %{slot_ref: slot_ref, key_label: key_label}} <- resolve_signer(opts) do
+      sign_opts = Keyword.take(opts, [:pin])
+
+      Pkcs11ex.Slot.sign(slot_ref, key_label, adapter.signing_mechanism(), data, sign_opts)
+    end
+  end
+
+  defp resolve_signer(opts) do
+    case Keyword.fetch!(opts, :signer) do
+      {slot_ref, key_ref} when is_atom(slot_ref) and is_atom(key_ref) ->
+        resolve_signer_pair(slot_ref, key_ref)
+
+      key_ref when is_atom(key_ref) ->
+        case default_slot() do
+          nil -> {:error, :no_default_slot}
+          slot_ref -> resolve_signer_pair(slot_ref, key_ref)
+        end
+
+      other ->
+        {:error, {:invalid_signer, other}}
+    end
+  end
+
+  defp resolve_signer_pair(slot_ref, key_ref) do
+    with {:ok, slot_config} <- Pkcs11ex.Slot.Server.get_config(slot_ref),
+         keys = slot_config[:keys] || [],
+         {:ok, key_entry} <- fetch_key(keys, key_ref),
+         {:ok, key_label} <- key_label_from_entry(key_entry) do
+      {:ok, %{slot_ref: slot_ref, key_ref: key_ref, key_label: key_label}}
+    end
+  end
+
+  defp fetch_key(keys, key_ref) do
+    case Keyword.fetch(keys, key_ref) do
+      {:ok, entry} -> {:ok, entry}
+      :error -> {:error, {:key_not_found, key_ref}}
+    end
+  end
+
+  defp key_label_from_entry(entry) do
+    case {entry[:label], entry[:id]} do
+      {label, _} when is_binary(label) -> {:ok, label}
+      {_, id} when is_binary(id) -> {:ok, id}
+      _ -> {:error, :key_has_no_label_or_id}
+    end
+  end
+
+  defp default_slot do
+    Pkcs11ex.Application.config().default_slot
+  rescue
+    # Application not started — for example in plain-script use of the
+    # legacy path without the supervisor. Atom-shorthand :signer requires
+    # config; tuple form does not.
+    _ -> nil
+  end
 
   defp run_sign(opts, mechanism, data) do
     module = Keyword.fetch!(opts, :module)
