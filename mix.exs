@@ -51,6 +51,12 @@ defmodule Pkcs11ex.MixProject do
       # public key so verify can mathematically check SoftHSM-produced signatures.
       {:x509, "~> 0.8", only: :test},
 
+      # Sister library — opt-in audit trail. In this monorepo, dev/test pulls
+      # it via path. When publishing pkcs11ex to Hex, this becomes a regular
+      # `{:pkcs11ex_audit, "~> 0.x", optional: true}` dep, and the audit hook
+      # in Pkcs11ex.JWS.sign gates on `Code.ensure_loaded?(Pkcs11ex.Audit)`.
+      {:pkcs11ex_audit, path: "pkcs11ex_audit"},
+
       # Dev / test only
       {:ex_doc, "~> 0.34", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},

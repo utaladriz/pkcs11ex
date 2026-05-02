@@ -1,0 +1,15 @@
+# Elixir / Mix
+/_build/
+/cover/
+/deps/
+/doc/
+/.fetch
+erl_crash.dump
+*.ez
+pkcs11ex_audit-*.tar
+/tmp/
+
+# Editor / language servers
+.elixir_ls/
+.elixir-ls/
+.lexical/
