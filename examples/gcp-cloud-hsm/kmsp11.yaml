@@ -1,0 +1,14 @@
+# libkmsp11 configuration. Set KMS_PKCS11_CONFIG to this file's path
+# (pkcs11ex does this for you when :driver_config is set on the slot).
+#
+# Reference: https://github.com/GoogleCloudPlatform/kms-integrations/blob/master/kmsp11/docs/user_guide.md
+
+tokens:
+  - key_ring: "projects/your-gcp-project/locations/us-central1/keyRings/pkcs11ex-demo"
+
+# Optional. If unset, libkmsp11 uses Application Default Credentials (ADC).
+# Recommended: leave unset on GCE/GKE/Cloud Run with Workload Identity.
+# service_account: "/path/to/service-account.json"
+
+# Optional logging:
+log_directory: /var/log/kmsp11

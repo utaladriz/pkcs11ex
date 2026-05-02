@@ -205,11 +205,21 @@ defmodule Pkcs11ex.Slot.Server do
   end
 
   def handle_call({:login, pin}, _from, state) when is_binary(pin) do
-    with {:ok, state} <- ensure_session_open(state),
-         {:ok, state} <- do_login(state, pin) do
-      {:reply, :ok, state}
-    else
-      {:error, _} = err -> {:reply, err, state}
+    cond do
+      state.slot_config[:type] == :cloud_hsm ->
+        {:reply, {:error, :no_pin_required}, state}
+
+      true ->
+        case ensure_session_open(state) do
+          {:ok, state} ->
+            case do_login(state, pin) do
+              {:ok, state} -> {:reply, :ok, state}
+              {:error, _} = err -> {:reply, err, state}
+            end
+
+          {:error, _} = err ->
+            {:reply, err, state}
+        end
     end
   end
 
@@ -237,29 +247,6 @@ defmodule Pkcs11ex.Slot.Server do
     end
   end
 
-  # Rustler 0.37 decodes `Vec<u8>` only from Erlang lists, not binaries. The
-  # `RsaPrivateComponents` NifStruct's fields are `Vec<u8>`, so we convert
-  # each field's binary to a list before crossing the NIF boundary.
-  defp binary_components_to_lists(%Pkcs11ex.Native.RsaPrivateComponents{} = c) do
-    %{
-      c
-      | modulus: :binary.bin_to_list(c.modulus),
-        public_exponent: :binary.bin_to_list(c.public_exponent),
-        private_exponent: :binary.bin_to_list(c.private_exponent),
-        prime1: :binary.bin_to_list(c.prime1),
-        prime2: :binary.bin_to_list(c.prime2),
-        exponent1: :binary.bin_to_list(c.exponent1),
-        exponent2: :binary.bin_to_list(c.exponent2),
-        coefficient: :binary.bin_to_list(c.coefficient)
-    }
-  end
-
-  defp safe_call(fun) do
-    fun.()
-  rescue
-    e -> {:error, {:nif_raised, Exception.message(e)}}
-  end
-
   def handle_call({:verify, key_label, mechanism, data, signature, _opts}, _from, state) do
     with {:ok, state} <- ensure_session_open(state),
          mech_str = Atom.to_string(mechanism),
@@ -280,17 +267,49 @@ defmodule Pkcs11ex.Slot.Server do
   def handle_call(:get_config, _from, state), do: {:reply, {:ok, state.slot_config}, state}
 
   def handle_call(:logout, _from, state) do
-    case state.session do
-      nil ->
+    cond do
+      state.slot_config[:type] == :cloud_hsm ->
+        # No login state to drop on a cloud HSM slot — the slot stays
+        # in :open with whatever session it has.
+        {:reply, :ok, state}
+
+      state.session == nil ->
         {:reply, :ok, %{state | state: :uninitialized, pin: nil}}
 
-      session ->
-        _ = Native.session_logout(session)
-        {:reply, :ok, %{state | state: :open, pin: nil}}
+      true ->
+        _ = Native.session_logout(state.session)
+        {:reply, :ok, %{state | state: :open, pin: nil, last_activity: nil}}
     end
   end
 
   # ---------- State transitions ----------
+
+  # Rustler 0.37 decodes `Vec<u8>` only from Erlang lists, not binaries. The
+  # `RsaPrivateComponents` NifStruct's fields are `Vec<u8>`, so we convert
+  # each field's binary to a list before crossing the NIF boundary.
+  defp binary_components_to_lists(%Pkcs11ex.Native.RsaPrivateComponents{} = c) do
+    %{
+      c
+      | modulus: :binary.bin_to_list(c.modulus),
+        public_exponent: :binary.bin_to_list(c.public_exponent),
+        private_exponent: :binary.bin_to_list(c.private_exponent),
+        prime1: :binary.bin_to_list(c.prime1),
+        prime2: :binary.bin_to_list(c.prime2),
+        exponent1: :binary.bin_to_list(c.exponent1),
+        exponent2: :binary.bin_to_list(c.exponent2),
+        coefficient: :binary.bin_to_list(c.coefficient)
+    }
+  end
+
+  # Wrap a NIF call so a Rustler decode exception (e.g., bad input shape)
+  # surfaces as {:error, _} rather than crashing the GenServer and losing
+  # the PKCS#11 login state. Cryptoki and SoftHSM keep login state at the
+  # token level — restarting our resource doesn't reset that.
+  defp safe_call(fun) do
+    fun.()
+  rescue
+    e -> {:error, {:nif_raised, Exception.message(e)}}
+  end
 
   defp ensure_session_open(%{state: :uninitialized} = state), do: open_session(state)
   defp ensure_session_open(state), do: {:ok, state}
@@ -309,8 +328,16 @@ defmodule Pkcs11ex.Slot.Server do
     end
   end
 
-  defp ensure_logged_in(%{state: :logged_in} = state, _opts), do: {:ok, state}
-  defp ensure_logged_in(state, opts), do: do_login_via_priority(state, opts)
+  defp ensure_logged_in(state, opts) do
+    cond do
+      # Cloud HSM slots authenticate via cloud credentials (e.g., GCP Workload
+      # Identity for libkmsp11), not PKCS#11 user PIN. The open session is
+      # sufficient for sign/verify; login is a no-op.
+      state.slot_config[:type] == :cloud_hsm -> {:ok, state}
+      state.state == :logged_in -> {:ok, state}
+      true -> do_login_via_priority(state, opts)
+    end
+  end
 
   # PIN priority order (shared between initial login and expiry-triggered
   # reauthentication):

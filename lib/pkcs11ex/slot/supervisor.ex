@@ -22,9 +22,9 @@ defmodule Pkcs11ex.SlotSupervisor do
     # slot servers, so the resources stay alive.
     modules =
       config.slots
-      |> Enum.map(fn {_ref, slot_config} -> slot_config[:driver] end)
-      |> Enum.uniq()
-      |> Enum.into(%{}, fn driver ->
+      |> driver_configs()
+      |> Enum.into(%{}, fn {driver, driver_config} ->
+        if driver_config, do: apply_driver_config_env(driver, driver_config)
         {:ok, mod} = load_module(driver, config.driver_pins)
         {driver, mod}
       end)
@@ -54,6 +54,39 @@ defmodule Pkcs11ex.SlotSupervisor do
     case Map.get(driver_pins, driver) do
       nil -> Native.module_load(driver)
       sha256_hex -> Native.module_load_pinned(driver, sha256_hex)
+    end
+  end
+
+  # Per-driver `:driver_config`. Config validation (Pkcs11ex.Config rule 11)
+  # guarantees at most one `:driver_config` per driver path.
+  defp driver_configs(slots) do
+    slots
+    |> Enum.reduce(%{}, fn {_ref, slot_config}, acc ->
+      Map.put_new(acc, slot_config[:driver], slot_config[:driver_config])
+    end)
+    |> Enum.to_list()
+  end
+
+  # Vendor-specific config-file passthrough at module load time.
+  #
+  # libkmsp11 (GCP Cloud HSM PKCS#11 provider) reads `KMS_PKCS11_CONFIG`
+  # from the process env. Other PKCS#11 modules either don't need a config
+  # file or use their own conventions; we only set this env var when the
+  # driver path looks like libkmsp11 to avoid polluting unrelated drivers.
+  #
+  # The cleaner alternative is `CK_C_INITIALIZE_ARGS.pReserved`, but cryptoki
+  # exposes that as an unsafe API. The env-var path is process-wide but
+  # that's fine because §1.5 rule 11 of the config schema forbids two slots
+  # sharing the same `.so` with different `:driver_config` values.
+  defp apply_driver_config_env(driver, driver_config) do
+    cond do
+      String.contains?(driver, "kmsp11") ->
+        System.put_env("KMS_PKCS11_CONFIG", driver_config)
+
+      true ->
+        # Drivers that read a different env var or a fixed-path config
+        # can be added here as we encounter them.
+        :ok
     end
   end
 end
