@@ -31,8 +31,10 @@ defmodule Pkcs11ex.Audit.Anchor.RFC3161Test do
 
           assert out =~ "Version: 1"
           assert out =~ "Hash Algorithm: sha256"
-          # openssl renders the nonce as hex 0x...
-          assert out =~ "Nonce: 0x" <> Integer.to_string(nonce, 16)
+          # openssl renders the nonce as hex 0x... zero-padded to 16 chars
+          # (8-byte uint, two hex digits per byte).
+          nonce_hex = nonce |> Integer.to_string(16) |> String.pad_leading(16, "0")
+          assert out =~ "Nonce: 0x" <> nonce_hex
           # Hash bytes present (look for the first few bytes in hex format)
           # openssl renders hash bytes space-separated, two hex digits each.
           first_4 =
