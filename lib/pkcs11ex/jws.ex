@@ -61,9 +61,62 @@ defmodule Pkcs11ex.JWS do
          signing_input = <<header_b64u::binary, ?., payload_bin::binary>>,
          signer_opts = signer_opts(opts),
          {:ok, sig_bytes} <-
-           Pkcs11ex.sign_bytes(signing_input, [{:encoding_context, :jose} | signer_opts]) do
-      sig_b64u = Base.url_encode64(sig_bytes, padding: false)
-      {:ok, <<header_b64u::binary, ?., ?., sig_b64u::binary>>}
+           Pkcs11ex.sign_bytes(signing_input, [{:encoding_context, :jose} | signer_opts]),
+         sig_b64u = Base.url_encode64(sig_bytes, padding: false),
+         jws = <<header_b64u::binary, ?., ?., sig_b64u::binary>>,
+         :ok <- maybe_audit(jws, payload_bin, alg, opts) do
+      {:ok, jws}
+    end
+  end
+
+  # ---------- Audit hook ----------
+
+  # Off by default — only fires when `:audit_to` is set. The PIN / signer ref
+  # / payload hash all flow into the entry; the JWS itself is recorded so
+  # the chain is sufficient on its own (no need to retain the original
+  # detached payload to reconstruct what was signed at audit time, since
+  # the JWS payload hash binds it).
+  defp maybe_audit(_jws, _payload_bin, _alg, opts) when not is_list(opts), do: :ok
+
+  defp maybe_audit(jws, payload_bin, alg, opts) do
+    case Keyword.get(opts, :audit_to) do
+      nil ->
+        :ok
+
+      %Pkcs11ex.Audit{} = audit ->
+        do_audit(audit, jws, payload_bin, alg, opts)
+    end
+  end
+
+  defp do_audit(audit, jws, payload_bin, alg, opts) do
+    base = %{
+      kind: :jws_signed,
+      jws: jws,
+      alg: alg,
+      signer: audit_signer_id(opts),
+      payload_hash: :crypto.hash(:sha256, payload_bin),
+      signed_at: DateTime.utc_now() |> DateTime.truncate(:second)
+    }
+
+    payload =
+      case Keyword.get(opts, :audit_extra) do
+        extra when is_map(extra) -> Map.merge(base, extra)
+        _ -> base
+      end
+
+    case Pkcs11ex.Audit.append(audit, payload) do
+      {:ok, _entry} -> :ok
+      {:error, reason} -> {:error, {:audit_failed, reason}}
+    end
+  end
+
+  # Pick the most descriptive identity available from the sign opts:
+  #   - :signer (the spec'd canonical form: atom or {slot_ref, key_ref}); else
+  #   - flat {slot_id, key_label} from the legacy explicit-opts path.
+  defp audit_signer_id(opts) do
+    case Keyword.get(opts, :signer) do
+      nil -> {Keyword.get(opts, :slot_id), Keyword.get(opts, :key_label)}
+      ref -> ref
     end
   end
 
@@ -254,7 +307,15 @@ defmodule Pkcs11ex.JWS do
 
   defp signer_opts(opts) do
     # Forward every PKCS#11-related opt to Layer 2 sign_bytes; drop JWS-only ones.
-    Keyword.drop(opts, [:x5c, :extra_headers, :trust_policy, :policy_opts, :encoding_context])
+    Keyword.drop(opts, [
+      :x5c,
+      :extra_headers,
+      :trust_policy,
+      :policy_opts,
+      :encoding_context,
+      :audit_to,
+      :audit_extra
+    ])
   end
 
   defp configured_policy do
