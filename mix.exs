@@ -33,7 +33,7 @@ defmodule Pkcs11ex.MixProject do
 
   def application do
     [
-      extra_applications: [:logger, :crypto, :public_key],
+      extra_applications: [:logger, :crypto, :public_key, :inets, :ssl],
       mod: {Pkcs11ex.Application, []}
     ]
   end

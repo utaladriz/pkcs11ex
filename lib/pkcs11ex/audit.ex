@@ -143,6 +143,52 @@ defmodule Pkcs11ex.Audit do
     end
   end
 
+  @doc """
+  Anchor the current chain head against an RFC 3161 Time-Stamping
+  Authority. Reads the head, sends its `content_hash` to the TSA, stores
+  the returned TimeStampToken (TST) as a new audit entry whose payload
+  carries the anchored seq + hash + opaque TST bytes.
+
+  This addresses the "operator-replay/truncate" gap of a bare hash chain
+  by binding the chain state to a TSA-attested time. The TST itself is
+  a CMS SignedData; auditors verify its signature against the TSA's
+  cert chain (out of scope for this library — store the bytes, hand to
+  whoever audits).
+
+  ## Required
+
+    * `tsa_url` — the TSA's HTTP endpoint (e.g.,
+      `"http://timestamp.digicert.com"`).
+
+  ## Optional opts
+
+    * `:timeout` — milliseconds, default 10_000.
+
+  ## Returns
+
+  `{:ok, anchor_entry}` on success, where `anchor_entry.payload` is a
+  map `%{kind: :rfc3161_anchor, anchored_seq, anchored_hash, nonce, tst}`.
+  Returns `{:error, :empty_chain}` if there's nothing to anchor.
+  """
+  @spec anchor_head(t(), String.t(), keyword()) :: {:ok, Entry.t()} | {:error, term()}
+  def anchor_head(%__MODULE__{} = audit, tsa_url, opts \\ []) do
+    with {:ok, head_entry} <- audit.storage_module.head(audit.storage_handle),
+         {:ok, request} <- Pkcs11ex.Audit.Anchor.RFC3161.build_request(head_entry.content_hash),
+         {:ok, tst} <- Pkcs11ex.Audit.Anchor.RFC3161.fetch_token(tsa_url, request.der, opts) do
+      append(audit, %{
+        kind: :rfc3161_anchor,
+        anchored_seq: head_entry.seq,
+        anchored_hash: head_entry.content_hash,
+        nonce: request.nonce,
+        tsa_url: tsa_url,
+        tst: tst
+      })
+    else
+      {:error, :empty} -> {:error, :empty_chain}
+      {:error, _} = err -> err
+    end
+  end
+
   @doc "Convenience wrapper around the storage's `head/1`."
   @spec head(t()) :: {:ok, Entry.t()} | {:error, :empty}
   def head(%__MODULE__{} = audit), do: audit.storage_module.head(audit.storage_handle)
