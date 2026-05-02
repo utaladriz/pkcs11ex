@@ -17,13 +17,19 @@ defmodule Pkcs11ex.Application do
       # leave it idle; deployments that swap in/out at runtime get it for free.
       Pkcs11ex.Policy.PinnedRegistry,
 
-      # Slot server registry — name-resolves :slot_ref → pid for the
-      # per-slot GenServers under SlotSupervisor.
+      # Slot server registry — name-resolves {slot_ref, worker_index} → pid
+      # for the per-slot GenServers under SlotSupervisor. Pool slots have
+      # multiple worker_index values; non-pool slots use index 1.
       {Registry, keys: :unique, name: Pkcs11ex.Slot.Registry},
 
-      # Per-slot GenServers, one per entry in Pkcs11ex.Config :slots.
-      # Empty config (verify-only deployments) is fine — the supervisor
-      # just has no children.
+      # Pool dispatcher — owns the ETS table that SlotSupervisor populates
+      # with each slot's pool size. Started before SlotSupervisor so the
+      # supervisor can register pool sizes during init.
+      Pkcs11ex.Slot.Pool,
+
+      # Per-slot GenServers, one per entry in Pkcs11ex.Config :slots
+      # (or N per slot for pool slots). Empty config (verify-only
+      # deployments) is fine — the supervisor just has no children.
       Pkcs11ex.SlotSupervisor
     ]
 

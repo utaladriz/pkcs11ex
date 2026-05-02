@@ -32,13 +32,23 @@ defmodule Pkcs11ex.SlotSupervisor do
     :persistent_term.put({__MODULE__, :modules}, modules)
 
     slot_children =
-      Enum.map(config.slots, fn {ref, slot_config} ->
+      Enum.flat_map(config.slots, fn {ref, slot_config} ->
         module = Map.fetch!(modules, slot_config[:driver])
+        size = slot_config[:session_pool_size] || 1
 
-        Supervisor.child_spec(
-          {Slot.Server, slot_ref: ref, slot_config: slot_config, driver_pins: config.driver_pins, module: module},
-          id: {Slot.Server, ref}
-        )
+        Pkcs11ex.Slot.Pool.register(ref, size)
+
+        for idx <- 1..size do
+          Supervisor.child_spec(
+            {Slot.Server,
+             slot_ref: ref,
+             worker_index: idx,
+             slot_config: slot_config,
+             driver_pins: config.driver_pins,
+             module: module},
+            id: {Slot.Server, ref, idx}
+          )
+        end
       end)
 
     Supervisor.init(slot_children, strategy: :one_for_one)

@@ -27,12 +27,14 @@ defmodule Pkcs11ex.Slot.Server do
   use GenServer
 
   alias Pkcs11ex.Native
+  alias Pkcs11ex.Slot.Pool
 
   @typedoc "State machine state of the slot."
   @type slot_state :: :uninitialized | :open | :logged_in
 
   defstruct [
     :slot_ref,
+    :worker_index,
     :slot_config,
     :module,
     :session,
@@ -48,42 +50,94 @@ defmodule Pkcs11ex.Slot.Server do
   Start a slot server. Options:
 
     * `:slot_ref` — atom from `Pkcs11ex.Config.t().slots`. Required.
+    * `:worker_index` — integer ≥ 1, identifying this worker within the
+      slot's pool. Defaults to `1`. The supervisor passes 1..N for pool
+      slots; tests and single-worker production paths use the default.
     * `:slot_config` — the keyword list for that slot. Required.
     * `:driver_pins` — the global `:driver_pins` map. Defaults to `%{}`.
     * `:name` — registered name. Defaults to the via-tuple in
-      `Pkcs11ex.Slot.Registry`.
+      `Pkcs11ex.Slot.Registry` keyed by `{slot_ref, worker_index}`.
   """
   def start_link(opts) do
     slot_ref = Keyword.fetch!(opts, :slot_ref)
-    name = Keyword.get(opts, :name, via(slot_ref))
+    worker_index = Keyword.get(opts, :worker_index, 1)
+    name = Keyword.get(opts, :name, via({slot_ref, worker_index}))
     GenServer.start_link(__MODULE__, opts, name: name)
   end
 
-  @doc "Sign `data` with `key_label` on the slot. PIN is supplied per call (Phase 2 step 1)."
+  @doc """
+  Sign `data` with `key_label` on the slot. PIN is supplied per call.
+
+  Routes through `Pkcs11ex.Slot.Pool.next_worker_index/1`: for non-pool
+  slots (`session_pool_size: 1` or unconfigured) always lands on worker
+  1; for pool slots round-robins across the workers.
+
+  Emits `[:pkcs11ex, :slot, :sign]` telemetry with metadata
+  `%{slot_ref:, worker_index:, mechanism:}` after the call returns.
+  """
   @spec sign(atom(), String.t(), atom(), iodata(), keyword()) ::
           {:ok, binary()} | {:error, term()}
   def sign(slot_ref, key_label, mechanism, data, opts \\ []) do
-    GenServer.call(via(slot_ref), {:sign, key_label, mechanism, IO.iodata_to_binary(data), opts}, 30_000)
+    idx = Pool.next_worker_index(slot_ref)
+
+    result =
+      GenServer.call(
+        via({slot_ref, idx}),
+        {:sign, key_label, mechanism, IO.iodata_to_binary(data), opts},
+        30_000
+      )
+
+    :telemetry.execute(
+      [:pkcs11ex, :slot, :sign],
+      %{count: 1},
+      %{slot_ref: slot_ref, worker_index: idx, mechanism: mechanism, result: result_kind(result)}
+    )
+
+    result
   end
 
-  @doc "Verify a signature on the slot."
+  @doc """
+  Verify a signature on the slot. Routes through pool round-robin like
+  `sign/5`. Emits `[:pkcs11ex, :slot, :verify]` telemetry on the same
+  shape.
+  """
   @spec verify(atom(), String.t(), atom(), iodata(), binary(), keyword()) ::
           :ok | {:error, term()}
   def verify(slot_ref, key_label, mechanism, data, signature, opts \\ []) do
-    GenServer.call(
-      via(slot_ref),
-      {:verify, key_label, mechanism, IO.iodata_to_binary(data), signature, opts},
-      30_000
+    idx = Pool.next_worker_index(slot_ref)
+
+    result =
+      GenServer.call(
+        via({slot_ref, idx}),
+        {:verify, key_label, mechanism, IO.iodata_to_binary(data), signature, opts},
+        30_000
+      )
+
+    :telemetry.execute(
+      [:pkcs11ex, :slot, :verify],
+      %{count: 1},
+      %{slot_ref: slot_ref, worker_index: idx, mechanism: mechanism, result: result_kind(result)}
     )
+
+    result
   end
+
+  defp result_kind(:ok), do: :ok
+  defp result_kind({:ok, _}), do: :ok
+  defp result_kind({:error, _}), do: :error
+  defp result_kind(_), do: :other
 
   @doc """
   Explicit one-shot login. The PIN is consumed and dropped — not stored on
   the GenServer state.
+
+  Always lands on worker 1: `session_pool_size > 1` is forbidden for
+  `:token` slots (the only slot type where login state is observable),
+  so worker 1 is the only worker that has login state worth setting.
   """
   @spec login(atom(), binary()) :: :ok | {:error, term()}
   def login(slot_ref, pin) when is_binary(pin) do
-    GenServer.call(via(slot_ref), {:login, pin}, 30_000)
+    GenServer.call(via({slot_ref, 1}), {:login, pin}, 30_000)
   end
 
   @doc """
@@ -106,12 +160,12 @@ defmodule Pkcs11ex.Slot.Server do
   """
   @spec import_keypair(atom(), keyword(), keyword()) :: :ok | {:error, term()}
   def import_keypair(slot_ref, args, opts \\ []) do
-    GenServer.call(via(slot_ref), {:import_keypair, args, opts}, 60_000)
+    GenServer.call(via({slot_ref, 1}), {:import_keypair, args, opts}, 60_000)
   end
 
-  @doc "Returns the slot's current state machine state."
+  @doc "Returns the slot's current state machine state (worker 1)."
   @spec status(atom()) :: slot_state()
-  def status(slot_ref), do: GenServer.call(via(slot_ref), :status)
+  def status(slot_ref), do: GenServer.call(via({slot_ref, 1}), :status)
 
   @doc """
   Returns the slot's configured `slot_config` keyword list.
@@ -124,32 +178,37 @@ defmodule Pkcs11ex.Slot.Server do
   """
   @spec get_config(atom()) :: {:ok, keyword()} | {:error, :slot_not_found}
   def get_config(slot_ref) do
-    case Registry.lookup(Pkcs11ex.Slot.Registry, slot_ref) do
+    case Registry.lookup(Pkcs11ex.Slot.Registry, {slot_ref, 1}) do
       [] -> {:error, :slot_not_found}
-      [_] -> GenServer.call(via(slot_ref), :get_config)
+      [_] -> GenServer.call(via({slot_ref, 1}), :get_config)
     end
   end
 
   @doc """
   Explicit logout. The session stays open; subsequent sign calls will need a
-  PIN again.
+  PIN again. Targets worker 1 — see `login/2`.
   """
   @spec logout(atom()) :: :ok | {:error, term()}
-  def logout(slot_ref), do: GenServer.call(via(slot_ref), :logout)
+  def logout(slot_ref), do: GenServer.call(via({slot_ref, 1}), :logout)
 
   @doc false
-  def via(slot_ref), do: {:via, Registry, {Pkcs11ex.Slot.Registry, slot_ref}}
+  def via({slot_ref, worker_index})
+      when is_atom(slot_ref) and is_integer(worker_index) and worker_index >= 1 do
+    {:via, Registry, {Pkcs11ex.Slot.Registry, {slot_ref, worker_index}}}
+  end
 
   # ---------- GenServer callbacks ----------
 
   @impl GenServer
   def init(opts) do
     slot_ref = Keyword.fetch!(opts, :slot_ref)
+    worker_index = Keyword.get(opts, :worker_index, 1)
     slot_config = Keyword.fetch!(opts, :slot_config)
     driver_pins = Keyword.get(opts, :driver_pins, %{})
 
     state = %__MODULE__{
       slot_ref: slot_ref,
+      worker_index: worker_index,
       slot_config: slot_config,
       driver_pins: driver_pins
     }
@@ -376,11 +435,38 @@ defmodule Pkcs11ex.Slot.Server do
 
   defp do_login(state, pin) when is_binary(pin) do
     case Native.session_login(state.session, pin) do
-      {:ok, true} -> {:ok, fresh_logged_in(state)}
-      true -> {:ok, fresh_logged_in(state)}
-      {:error, _} = err -> err
+      {:ok, true} ->
+        {:ok, fresh_logged_in(state)}
+
+      true ->
+        {:ok, fresh_logged_in(state)}
+
+      {:error, {:pkcs11_error, msg}} = err ->
+        # PKCS#11 login state is per-token-per-application in most
+        # implementations (SoftHSM, libkmsp11), not per-session as the
+        # spec strictly requires. With session pooling, worker N's login
+        # attempt sees the token already logged in by worker M and gets
+        # CKR_USER_ALREADY_LOGGED_IN back. Treat as success: the desired
+        # state (this session can run private-key ops) is achieved.
+        if user_already_logged_in?(msg) do
+          {:ok, fresh_logged_in(state)}
+        else
+          err
+        end
+
+      {:error, _} = err ->
+        err
     end
   end
+
+  # cryptoki 0.12 surfaces RvError::UserAlreadyLoggedIn with a stable
+  # substring across releases — match on it rather than wiring a new
+  # NIF variant for one PKCS#11 quirk.
+  defp user_already_logged_in?(msg) when is_binary(msg) do
+    String.contains?(msg, "already logged")
+  end
+
+  defp user_already_logged_in?(_), do: false
 
   defp fresh_logged_in(state),
     do: %{state | state: :logged_in, pin: nil, last_activity: monotonic_now_ms()}

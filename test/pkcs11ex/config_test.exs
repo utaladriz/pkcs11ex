@@ -157,6 +157,70 @@ defmodule Pkcs11ex.ConfigTest do
     end
   end
 
+  describe "invariant: :session_pool_size > 1 requires :cloud_hsm or :soft_hsm" do
+    test "rejects pool size > 1 on a :token slot" do
+      env = [
+        slots: [
+          t: [
+            type: :token,
+            driver: "/x",
+            pin_callback: {M, :f, []},
+            session_pool_size: 4,
+            keys: [k: [label: "k"]]
+          ]
+        ]
+      ]
+
+      err = assert_raise Error, fn -> Config.load!(env: env, check_files: false) end
+      assert err.path == [:slots, :t, :session_pool_size]
+    end
+
+    test "accepts pool size > 1 on a :cloud_hsm slot" do
+      env = [
+        slots: [
+          h: [
+            type: :cloud_hsm,
+            driver: "/x",
+            session_pool_size: 4,
+            keys: [k: [label: "k"]]
+          ]
+        ]
+      ]
+
+      assert %Pkcs11ex.Config{} = Config.load!(env: env, check_files: false)
+    end
+
+    test "accepts pool size > 1 on a :soft_hsm slot" do
+      env = [
+        slots: [
+          s: [
+            type: :soft_hsm,
+            driver: "/x",
+            session_pool_size: 2,
+            keys: [k: [label: "k"]]
+          ]
+        ]
+      ]
+
+      assert %Pkcs11ex.Config{} = Config.load!(env: env, check_files: false)
+    end
+
+    test "accepts pool size 1 (default) on any slot type" do
+      env = [
+        slots: [
+          t: [
+            type: :token,
+            driver: "/x",
+            pin_callback: {M, :f, []},
+            keys: [k: [label: "k"]]
+          ]
+        ]
+      ]
+
+      assert %Pkcs11ex.Config{} = Config.load!(env: env, check_files: false)
+    end
+  end
+
   describe "invariant: :token slot requires :pin_callback" do
     test "rejects when missing" do
       env = [slots: [t: [type: :token, driver: "/x", keys: [k: [label: "k"]]]]]

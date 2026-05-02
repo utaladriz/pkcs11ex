@@ -187,6 +187,7 @@ defmodule Pkcs11ex.Config do
     |> check_keys_cert_label_xor_id!()
     |> check_per_slot_allowed_algs_intersection!()
     |> check_unique_driver_configs!()
+    |> check_session_pool_size_slot_type!()
     |> maybe_check_drivers_exist!(check_files?)
     |> maybe_check_driver_pins!(check_files?)
   end
@@ -289,6 +290,29 @@ defmodule Pkcs11ex.Config do
               "per-slot :allowed_algs has empty intersection with global allowlist"
             )
           end
+      end
+    end)
+
+    opts
+  end
+
+  # Rule 12: session_pool_size > 1 is only valid for cloud_hsm and soft_hsm.
+  # Token slots tie login state to a single session — pooling silently
+  # breaks PIN-protected access.
+  defp check_session_pool_size_slot_type!(opts) do
+    Enum.each(opts[:slots], fn {ref, slot} ->
+      case slot[:session_pool_size] do
+        n when is_integer(n) and n > 1 ->
+          if slot[:type] not in [:cloud_hsm, :soft_hsm] do
+            raise_config_error(
+              [:slots, ref, :session_pool_size],
+              ":session_pool_size > 1 requires :type :cloud_hsm or :soft_hsm; " <>
+                "got :type #{inspect(slot[:type])}"
+            )
+          end
+
+        _ ->
+          :ok
       end
     end)
 
