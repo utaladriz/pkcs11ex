@@ -40,7 +40,7 @@ defmodule Pkcs11ex.CMS.SignedData do
       always absent in this v1 — detached signatures only).
   """
 
-  alias Pkcs11ex.CMS.{Codec, OIDs}
+  alias Pkcs11ex.CMS.{Codec, OIDs, Parsed}
   alias Pkcs11ex.X509
 
   @typedoc """
@@ -189,5 +189,201 @@ defmodule Pkcs11ex.CMS.SignedData do
   defp to_certificate_choice(%X509{der: der}) do
     plain_cert = :public_key.pkix_decode_cert(der, :plain)
     {:certificate, plain_cert}
+  end
+
+  # ---------- Parse path ----------
+
+  @doc """
+  Parse a CMS `ContentInfo` DER and project it into a `Pkcs11ex.CMS.Parsed`
+  struct that carries everything a verify pipeline needs (the
+  to-be-signed bytes, the signature, the leaf cert, the message digest
+  and signing time from the signed attributes).
+
+  Rejects:
+    * non-`id-signedData` ContentInfo (returns `{:error, :not_signed_data}`)
+    * envelopes carrying anything other than exactly one `SignerInfo`
+      (single-signer is the v1 contract — multi-signature support is
+      Phase 4b territory)
+    * empty certificate sets (we need the leaf to verify the signature)
+    * malformed or absent required signed attributes (`messageDigest`)
+  """
+  @spec parse(binary()) :: {:ok, Parsed.t()} | {:error, term()}
+  def parse(der) when is_binary(der) do
+    with {:ok, ci} <- Codec.decode(:ContentInfo, der),
+         {:ok, signed_data} <- expect_signed_data(ci),
+         {:ok, signer_info} <- expect_single_signer(signed_data),
+         {:ok, certs} <- parse_certificate_set(elem(signed_data, 4)),
+         {:ok, leaf} <- match_leaf(certs, elem(signer_info, 2)),
+         signed_attrs = elem(signer_info, 4),
+         {:ok, tbs} <- Codec.encode(:SignedAttributes, signed_attrs),
+         {:ok, message_digest} <- attribute_value(signed_attrs, OIDs.id_message_digest()),
+         signing_time = attribute_signing_time(signed_attrs),
+         content_oid = elem(elem(signed_data, 3), 1),
+         digest_oid = elem(elem(signer_info, 3), 1),
+         sig_oid = elem(elem(signer_info, 5), 1),
+         signature = elem(signer_info, 6) do
+      {:ok,
+       %Parsed{
+         der: der,
+         signed_attrs: signed_attrs,
+         to_be_signed: tbs,
+         signature: signature,
+         digest_algorithm: oid_to_digest_algorithm(digest_oid),
+         signature_algorithm: oid_to_signature_algorithm(sig_oid),
+         leaf: leaf,
+         certificates: certs,
+         content_oid: content_oid,
+         message_digest: message_digest,
+         signing_time: signing_time
+       }}
+    end
+  end
+
+  defp expect_signed_data({:ContentInfo, oid, content}) do
+    if oid == OIDs.id_signed_data() do
+      {:ok, content}
+    else
+      {:error, {:not_signed_data, oid}}
+    end
+  end
+
+  defp expect_single_signer(signed_data) do
+    case elem(signed_data, 6) do
+      [signer_info] -> {:ok, signer_info}
+      [] -> {:error, :no_signer_info}
+      [_ | _] -> {:error, :multiple_signer_info_unsupported_in_v1}
+    end
+  end
+
+  defp parse_certificate_set(:asn1_NOVALUE), do: {:error, :no_certificates}
+  defp parse_certificate_set([]), do: {:error, :no_certificates}
+
+  defp parse_certificate_set(choices) when is_list(choices) do
+    choices
+    |> Enum.reduce_while({:ok, []}, fn
+      {:certificate, plain_cert}, {:ok, acc} ->
+        case x509_from_plain(plain_cert) do
+          {:ok, x} -> {:cont, {:ok, [x | acc]}}
+          err -> {:halt, err}
+        end
+
+      _other, {:ok, _} ->
+        {:halt, {:error, :unsupported_certificate_choice}}
+    end)
+    |> case do
+      {:ok, reversed} -> {:ok, Enum.reverse(reversed)}
+      err -> err
+    end
+  end
+
+  defp x509_from_plain(plain_cert) do
+    der = :public_key.pkix_encode(:Certificate, plain_cert, :plain)
+    X509.from_der(der)
+  rescue
+    _ -> {:error, :invalid_embedded_certificate}
+  end
+
+  # SignerInfo.sid is `{:issuerAndSerialNumber, IssuerAndSerialNumber}`
+  # for CMS v1 signers; SubjectKeyIdentifier form is v3 (deferred).
+  #
+  # Comparing issuer Names structurally is brittle: the OTP X.509 ASN.1
+  # module (`:public_key.pkix_decode_cert`) uses `:AttributeTypeAndValue`
+  # records, while the CMS-2009 ASN.1 module decodes the embedded cert
+  # with `:SingleAttribute` records — different tag-name, identical
+  # logical content. Encode both Names back to DER via
+  # `:public_key.der_encode(:Name, _)` and compare bytes instead.
+  defp match_leaf(certs, {:issuerAndSerialNumber, {:IssuerAndSerialNumber, sid_issuer, serial}}) do
+    sid_issuer_der = :public_key.der_encode(:Name, sid_issuer)
+
+    Enum.find(certs, fn %X509{der: der} ->
+      plain = :public_key.pkix_decode_cert(der, :plain)
+      tbs = elem(plain, 1)
+      cert_issuer_der = :public_key.der_encode(:Name, elem(tbs, 4))
+      cert_issuer_der == sid_issuer_der and elem(tbs, 2) == serial
+    end)
+    |> case do
+      nil -> {:error, :leaf_certificate_not_found_in_chain}
+      leaf -> {:ok, leaf}
+    end
+  end
+
+  defp match_leaf(_, {:subjectKeyIdentifier, _}),
+    do: {:error, :subject_key_identifier_unsupported_in_v1}
+
+  defp attribute_value(signed_attrs, target_oid) do
+    case Enum.find(signed_attrs, fn {:Attribute, oid, _values} -> oid == target_oid end) do
+      {:Attribute, _, [value]} -> {:ok, value}
+      {:Attribute, _, _} -> {:error, {:multi_value_attribute, target_oid}}
+      nil -> {:error, {:missing_attribute, target_oid}}
+    end
+  end
+
+  defp attribute_signing_time(signed_attrs) do
+    case Enum.find(signed_attrs, fn {:Attribute, oid, _} -> oid == OIDs.id_signing_time() end) do
+      {:Attribute, _, [{:utcTime, charlist}]} -> parse_utc_time(charlist)
+      {:Attribute, _, [{:generalTime, charlist}]} -> parse_generalized_time(charlist)
+      _ -> nil
+    end
+  end
+
+  defp parse_utc_time(charlist) do
+    case List.to_string(charlist) do
+      <<yy::binary-2, mm::binary-2, dd::binary-2, hh::binary-2, mi::binary-2, ss::binary-2,
+        "Z">> ->
+        # RFC 5280 §4.1.2.5.1: YY < 50 → 20YY, else 19YY.
+        full_year = 2000 + String.to_integer(yy)
+
+        full_year =
+          if full_year > 2049 do
+            full_year - 100
+          else
+            full_year
+          end
+
+        build_datetime(full_year, mm, dd, hh, mi, ss)
+
+      _ ->
+        nil
+    end
+  end
+
+  defp parse_generalized_time(charlist) do
+    case List.to_string(charlist) do
+      <<yyyy::binary-4, mm::binary-2, dd::binary-2, hh::binary-2, mi::binary-2, ss::binary-2,
+        "Z">> ->
+        build_datetime(String.to_integer(yyyy), mm, dd, hh, mi, ss)
+
+      _ ->
+        nil
+    end
+  end
+
+  defp build_datetime(year, mm, dd, hh, mi, ss) do
+    with {:ok, date} <- Date.new(year, String.to_integer(mm), String.to_integer(dd)),
+         {:ok, time} <-
+           Time.new(String.to_integer(hh), String.to_integer(mi), String.to_integer(ss)),
+         {:ok, naive} <- NaiveDateTime.new(date, time),
+         {:ok, dt} <- DateTime.from_naive(naive, "Etc/UTC") do
+      dt
+    else
+      _ -> nil
+    end
+  end
+
+  defp oid_to_digest_algorithm(oid) do
+    cond do
+      oid == OIDs.id_sha256() -> :sha256
+      oid == OIDs.id_sha384() -> :sha384
+      oid == OIDs.id_sha512() -> :sha512
+      true -> {:unknown_oid, oid}
+    end
+  end
+
+  defp oid_to_signature_algorithm(oid) do
+    cond do
+      oid == OIDs.id_sha256_with_rsa() -> :rsa_sha256
+      oid == OIDs.id_rsassa_pss() -> :rsa_pss_sha256
+      true -> {:unknown_oid, oid}
+    end
   end
 end

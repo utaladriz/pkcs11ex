@@ -151,6 +151,66 @@ defmodule Pkcs11ex.CMS.SignedDataTest do
     end
   end
 
+  describe "parse/1 — round trip with build/3" do
+    test "extracts signedAttrs, signature, leaf cert, and signing time", ctx do
+      digest = :crypto.hash(:sha256, "round-trip me")
+
+      {:ok, attrs} =
+        SignedAttributes.build(digest: digest, signing_time: ~U[2026-05-04 12:34:56Z])
+
+      sig = sign_attrs!(attrs, ctx.rsa_priv)
+
+      {:ok, der} =
+        SignedData.build(attrs, sig,
+          certificates: [ctx.leaf],
+          digest_algorithm: :sha256,
+          signature_algorithm: :rsa_sha256
+        )
+
+      assert {:ok, parsed} = SignedData.parse(der)
+
+      assert parsed.der == der
+      assert parsed.signature == sig
+      assert parsed.digest_algorithm == :sha256
+      assert parsed.signature_algorithm == :rsa_sha256
+      assert parsed.message_digest == digest
+      assert parsed.signing_time == ~U[2026-05-04 12:34:56Z]
+      assert parsed.content_oid == OIDs.id_data()
+      assert %Pkcs11ex.X509{} = parsed.leaf
+      assert [%Pkcs11ex.X509{} = leaf] = parsed.certificates
+      assert leaf.der == ctx.leaf.der
+    end
+
+    test "to_be_signed bytes round-trip the signature math via :public_key.verify", ctx do
+      digest = :crypto.hash(:sha256, "verify path")
+      {:ok, attrs} = SignedAttributes.build(digest: digest)
+      sig = sign_attrs!(attrs, ctx.rsa_priv)
+
+      {:ok, der} =
+        SignedData.build(attrs, sig,
+          certificates: [ctx.leaf],
+          digest_algorithm: :sha256,
+          signature_algorithm: :rsa_sha256
+        )
+
+      {:ok, parsed} = SignedData.parse(der)
+
+      assert :public_key.verify(parsed.to_be_signed, :sha256, parsed.signature, ctx.leaf.public_key)
+    end
+
+    test "rejects ContentInfo whose contentType isn't id-signedData" do
+      data_oid = OIDs.id_data()
+      ci = {:ContentInfo, data_oid, "raw bytes"}
+      {:ok, der} = Codec.encode(:ContentInfo, ci)
+      assert {:error, {:not_signed_data, ^data_oid}} = SignedData.parse(der)
+    end
+
+    test "rejects garbage DER" do
+      assert {:error, {:cms_codec, :ContentInfo, _}} =
+               SignedData.parse(<<0xFF, 0xFF, 0xFF, 0xFF>>)
+    end
+  end
+
   describe "openssl cross-check" do
     @describetag :openssl
 
