@@ -49,7 +49,7 @@ defmodule Pkcs11ex.PDF do
   """
 
   alias Pkcs11ex.Algorithm
-  alias Pkcs11ex.CMS.{Parsed, SignedAttributes, SignedData}
+  alias Pkcs11ex.CMS.{Parsed, SignedAttributes, SignedData, UnsignedAttributes}
   alias Pkcs11ex.PDF.Writer
   alias Pkcs11ex.X509
 
@@ -185,12 +185,51 @@ defmodule Pkcs11ex.PDF do
          signer_opts = signer_opts(opts, alg),
          {:ok, raw_signature} <-
            Pkcs11ex.sign_bytes(tbs, [{:encoding_context, :der} | signer_opts]),
+         {:ok, unsigned_attrs} <- maybe_fetch_signature_timestamp(raw_signature, opts),
          {:ok, cms_der} <-
            SignedData.build(signed_attrs, raw_signature,
              certificates: x5c_der_list,
-             signature_algorithm: cms_signature_algorithm(alg)
+             signature_algorithm: cms_signature_algorithm(alg),
+             unsigned_attrs: unsigned_attrs
            ) do
       {:ok, cms_der}
+    end
+  end
+
+  # PAdES B-T: when `:tsa_url` is supplied, request an RFC 3161
+  # TimeStampToken over SHA-256 of the *raw signature bytes* (the
+  # SignerInfo's `signature` field, per RFC 3161 §3.3.4) and embed
+  # it as the `id-aa-signatureTimeStampToken` unsigned attribute.
+  # The timestamp is *not* covered by the signature math — it
+  # anchors the moment the signature existed against a third-party
+  # clock.
+  defp maybe_fetch_signature_timestamp(raw_signature, opts) do
+    case Keyword.get(opts, :tsa_url) do
+      nil ->
+        {:ok, :asn1_NOVALUE}
+
+      tsa_url ->
+        if Code.ensure_loaded?(Pkcs11ex.Audit.Anchor.RFC3161) do
+          do_fetch_signature_timestamp(raw_signature, tsa_url, opts)
+        else
+          {:error, {:bt_failed, :pkcs11ex_audit_not_loaded}}
+        end
+    end
+  end
+
+  @compile {:no_warn_undefined, [Pkcs11ex.Audit.Anchor.RFC3161]}
+
+  defp do_fetch_signature_timestamp(raw_signature, tsa_url, opts) do
+    timeout = Keyword.get(opts, :tsa_timeout, 10_000)
+    digest = :crypto.hash(:sha256, raw_signature)
+    rfc3161 = Pkcs11ex.Audit.Anchor.RFC3161
+
+    with {:ok, %{der: req_der}} <- apply(rfc3161, :build_request, [digest]),
+         {:ok, body} <- apply(rfc3161, :fetch_token, [tsa_url, req_der, [timeout: timeout]]),
+         {:ok, tst} <- apply(rfc3161, :extract_token, [body]) do
+      {:ok, [UnsignedAttributes.signature_timestamp(tst)]}
+    else
+      {:error, reason} -> {:error, {:bt_failed, reason}}
     end
   end
 
@@ -237,7 +276,9 @@ defmodule Pkcs11ex.PDF do
         :location,
         :contact_info,
         :signing_time,
-        :encoding_context
+        :encoding_context,
+        :tsa_url,
+        :tsa_timeout
       ])
 
     Keyword.put(cleaned, :alg, alg)

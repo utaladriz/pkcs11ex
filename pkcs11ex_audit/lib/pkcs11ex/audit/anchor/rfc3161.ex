@@ -115,6 +115,101 @@ defmodule Pkcs11ex.Audit.Anchor.RFC3161 do
     end
   end
 
+  @doc """
+  Extracts the `TimeStampToken` (a `ContentInfo` per RFC 3161 §2.4.2)
+  from a `TimeStampResp` body returned by `fetch_token/3`.
+
+  RFC 3161 §2.4.2 grammar:
+
+      TimeStampResp ::= SEQUENCE {
+        status           PKIStatusInfo,
+        timeStampToken   TimeStampToken     OPTIONAL
+      }
+
+  The TST is OPTIONAL — present only when `PKIStatus` is `granted (0)`
+  or `grantedWithMods (1)`. This function refuses to extract on any
+  other status. Returns the TST DER bytes verbatim — they are a CMS
+  ContentInfo (id-signedData) ready to embed as the value of a
+  `signature-time-stamp-token` unsigned attribute (PAdES B-T) or a
+  `<xades:EncapsulatedTimeStamp>` (XAdES B-T).
+  """
+  @spec extract_token(binary()) ::
+          {:ok, binary()}
+          | {:error,
+             {:tsa_status, non_neg_integer()}
+             | :missing_time_stamp_token
+             | {:malformed_tsa_response, term()}}
+  def extract_token(<<0x30, rest::binary>> = _resp) do
+    with {:ok, body, _} <- der_take_length(rest),
+         {:ok, status_info, after_status} <- der_take_seq(body),
+         {:ok, status, _} <- der_take_int(status_info) do
+      cond do
+        status not in [0, 1] ->
+          {:error, {:tsa_status, status}}
+
+        byte_size(after_status) == 0 ->
+          {:error, :missing_time_stamp_token}
+
+        true ->
+          # `timeStampToken` is the next outer element after PKIStatusInfo.
+          # It's a ContentInfo (SEQUENCE) — return it verbatim.
+          case after_status do
+            <<0x30, _::binary>> = tst -> {:ok, take_full_tlv(tst)}
+            _ -> {:error, :missing_time_stamp_token}
+          end
+      end
+    else
+      {:error, _} = err -> err
+      other -> {:error, {:malformed_tsa_response, other}}
+    end
+  rescue
+    e -> {:error, {:malformed_tsa_response, Exception.message(e)}}
+  end
+
+  def extract_token(_), do: {:error, {:malformed_tsa_response, :not_der_sequence}}
+
+  # Reads one TLV starting at the head, returns the full TLV bytes
+  # (tag + length + value).
+  defp take_full_tlv(<<_tag, rest::binary>> = bin) do
+    {len, len_octets} = der_length_with_size(rest)
+    binary_part(bin, 0, 1 + len_octets + len)
+  end
+
+  defp der_length_with_size(<<0::1, len::7, _::binary>>), do: {len, 1}
+
+  defp der_length_with_size(<<1::1, n::7, rest::binary>>) when n > 0 do
+    <<bytes::binary-size(n), _::binary>> = rest
+    {:binary.decode_unsigned(bytes, :big), 1 + n}
+  end
+
+  defp der_take_length(<<0::1, len::7, rest::binary>>) do
+    <<value::binary-size(len), tail::binary>> = rest
+    {:ok, value, tail}
+  end
+
+  defp der_take_length(<<1::1, n::7, rest::binary>>) when n > 0 do
+    <<bytes::binary-size(n), after_len::binary>> = rest
+    len = :binary.decode_unsigned(bytes, :big)
+    <<value::binary-size(len), tail::binary>> = after_len
+    {:ok, value, tail}
+  end
+
+  defp der_take_length(_), do: {:error, :malformed_length}
+
+  defp der_take_seq(<<0x30, rest::binary>>) do
+    {:ok, body, tail} = der_take_length(rest)
+    {:ok, body, tail}
+  end
+
+  defp der_take_seq(_), do: {:error, :expected_sequence}
+
+  defp der_take_int(<<0x02, rest::binary>>) do
+    {:ok, bytes, tail} = der_take_length(rest)
+    {:ok, :binary.decode_unsigned(bytes, :big), tail}
+  end
+
+  defp der_take_int(_), do: {:error, :expected_integer}
+
   # ---------- DER primitives ----------
 
   defp encode_sha256_oid do

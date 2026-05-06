@@ -10,13 +10,20 @@ defmodule Pkcs11ex.CMS.OIDs do
   """
 
   # PKCS#7 / RFC 5652 content types — `1.2.840.113549.1.7.*`
-  @id_data {1, 2, 840, 113549, 1, 7, 1}
-  @id_signed_data {1, 2, 840, 113549, 1, 7, 2}
+  @id_data {1, 2, 840, 113_549, 1, 7, 1}
+  @id_signed_data {1, 2, 840, 113_549, 1, 7, 2}
 
   # PKCS#9 attributes — `1.2.840.113549.1.9.*`
-  @id_content_type {1, 2, 840, 113549, 1, 9, 3}
-  @id_message_digest {1, 2, 840, 113549, 1, 9, 4}
-  @id_signing_time {1, 2, 840, 113549, 1, 9, 5}
+  @id_content_type {1, 2, 840, 113_549, 1, 9, 3}
+  @id_message_digest {1, 2, 840, 113_549, 1, 9, 4}
+  @id_signing_time {1, 2, 840, 113_549, 1, 9, 5}
+
+  # S/MIME attributes — `1.2.840.113549.1.9.16.2.*`
+  # `id-aa-signatureTimeStampToken` per RFC 3161 §3.3.4. Embedded in
+  # CMS `unsignedAttrs` to carry an RFC 3161 TimeStampToken anchoring
+  # the SignerInfo's `signature` field — the canonical PAdES /
+  # CAdES B-T attribute.
+  @id_aa_signature_timestamp {1, 2, 840, 113_549, 1, 9, 16, 2, 14}
 
   # NIST hash algorithms — `2.16.840.1.101.3.4.2.*`
   @id_sha256 {2, 16, 840, 1, 101, 3, 4, 2, 1}
@@ -24,8 +31,8 @@ defmodule Pkcs11ex.CMS.OIDs do
   @id_sha512 {2, 16, 840, 1, 101, 3, 4, 2, 3}
 
   # PKCS#1 RSA signature algorithms — `1.2.840.113549.1.1.*`
-  @id_rsassa_pss {1, 2, 840, 113549, 1, 1, 10}
-  @id_sha256_with_rsa {1, 2, 840, 113549, 1, 1, 11}
+  @id_rsassa_pss {1, 2, 840, 113_549, 1, 1, 10}
+  @id_sha256_with_rsa {1, 2, 840, 113_549, 1, 1, 11}
 
   @doc "`id-data` — RFC 5652 §4."
   def id_data, do: @id_data
@@ -56,4 +63,7 @@ defmodule Pkcs11ex.CMS.OIDs do
 
   @doc "`sha256WithRSAEncryption` (RSA PKCS#1 v1.5 + SHA-256)."
   def id_sha256_with_rsa, do: @id_sha256_with_rsa
+
+  @doc "`id-aa-signatureTimeStampToken` PKCS#9/SMIME attribute — RFC 3161 §3.3.4."
+  def id_aa_signature_timestamp, do: @id_aa_signature_timestamp
 end

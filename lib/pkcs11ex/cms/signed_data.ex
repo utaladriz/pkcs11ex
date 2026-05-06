@@ -77,8 +77,17 @@ defmodule Pkcs11ex.CMS.SignedData do
          {:ok, digest_oid} <- resolve_digest_algorithm(opts),
          {:ok, sig_oid, sig_params} <- resolve_signature_algorithm(opts),
          content_oid = Keyword.get(opts, :content_oid, OIDs.id_data()),
+         unsigned_attrs = Keyword.get(opts, :unsigned_attrs, :asn1_NOVALUE),
          {:ok, signer_info} <-
-           build_signer_info(leaf, signed_attrs, digest_oid, sig_oid, sig_params, signature),
+           build_signer_info(
+             leaf,
+             signed_attrs,
+             digest_oid,
+             sig_oid,
+             sig_params,
+             signature,
+             unsigned_attrs
+           ),
          {:ok, signed_data_term} <-
            build_signed_data_inner(certs, signer_info, digest_oid, content_oid),
          content_info = {:ContentInfo, OIDs.id_signed_data(), signed_data_term} do
@@ -224,12 +233,20 @@ defmodule Pkcs11ex.CMS.SignedData do
     end
   end
 
-  defp build_signer_info(%X509{} = leaf, signed_attrs, digest_oid, sig_oid, sig_params, signature) do
+  defp build_signer_info(
+         %X509{} = leaf,
+         signed_attrs,
+         digest_oid,
+         sig_oid,
+         sig_params,
+         signature,
+         unsigned_attrs
+       ) do
     with {:ok, issuer_and_serial} <- issuer_and_serial(leaf) do
       info =
         {:SignerInfo, 1, {:issuerAndSerialNumber, issuer_and_serial},
          {:DigestAlgorithmIdentifier, digest_oid, :asn1_NOVALUE}, signed_attrs,
-         {:SignatureAlgorithmIdentifier, sig_oid, sig_params}, signature, :asn1_NOVALUE}
+         {:SignatureAlgorithmIdentifier, sig_oid, sig_params}, signature, unsigned_attrs}
 
       {:ok, info}
     end
