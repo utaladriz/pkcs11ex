@@ -222,6 +222,80 @@ defmodule Pkcs11ex.XMLSofthsmTest do
   defp flip("A"), do: "B"
   defp flip(c), do: <<List.first(:binary.bin_to_list(c)) - 1::8>>
 
+  describe "XAdES B-T (Phase 5 step 9)" do
+    @describetag :tsa
+
+    @default_tsa "http://timestamp.digicert.com"
+
+    setup do
+      tsa_url = System.get_env("PKCS11EX_TSA_URL") || @default_tsa
+      {:ok, tsa_url: tsa_url}
+    end
+
+    test ":tsa_url attaches a SignatureTimeStamp under UnsignedSignatureProperties",
+         %{tsa_url: tsa_url} = ctx do
+      base_xml = sii_dte_fixture()
+
+      assert {:ok, signed_xml} =
+               XML.sign(base_xml,
+                 module: ctx.pkcs11_module,
+                 slot_id: ctx.slot_id,
+                 pin: ctx.pin,
+                 key_label: ctx.key_label,
+                 alg: :PS256,
+                 x5c: ctx.leaf_der,
+                 tsa_url: tsa_url,
+                 tsa_timeout: 15_000
+               )
+
+      # B-T sign-side: the signed XML still passes B-B verify (the
+      # timestamp lives in unsignedAttrs space and is not covered by
+      # the signature math).
+      assert {:ok, :anyone} = XML.verify(signed_xml)
+
+      # The B-T elements are present, in the right nesting order.
+      assert :binary.match(signed_xml, "<xades:UnsignedProperties>") != :nomatch
+      assert :binary.match(signed_xml, "<xades:UnsignedSignatureProperties>") != :nomatch
+      assert :binary.match(signed_xml, "<xades:SignatureTimeStamp ") != :nomatch
+      assert :binary.match(signed_xml, "<xades:EncapsulatedTimeStamp>") != :nomatch
+      # Canonicalisation method is exc-c14n per ETSI EN 319 132-1 §5.4.1.
+      assert signed_xml =~ ~r/<ds:CanonicalizationMethod[^>]*Algorithm="http:\/\/www\.w3\.org\/2001\/10\/xml-exc-c14n#"/
+
+      # The encapsulated TST is a CMS SignedData ContentInfo (DER
+      # SEQUENCE starting with 0x30, base64-encoded).
+      [_, ts_b64] =
+        Regex.run(
+          ~r/<xades:EncapsulatedTimeStamp>([^<]+)<\/xades:EncapsulatedTimeStamp>/,
+          signed_xml
+        )
+
+      tst_der = ts_b64 |> String.replace(~r/\s+/, "") |> Base.decode64!()
+      assert <<0x30, _::binary>> = tst_der
+      # id-signedData OID
+      assert :binary.match(
+               tst_der,
+               <<0x06, 0x09, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x07, 0x02>>
+             ) != :nomatch
+    end
+
+    test "without :tsa_url, the QP carries no UnsignedProperties block", ctx do
+      base_xml = sii_dte_fixture()
+
+      {:ok, signed_xml} =
+        XML.sign(base_xml,
+          module: ctx.pkcs11_module,
+          slot_id: ctx.slot_id,
+          pin: ctx.pin,
+          key_label: ctx.key_label,
+          alg: :PS256,
+          x5c: ctx.leaf_der
+        )
+
+      assert :binary.match(signed_xml, "<xades:UnsignedProperties>") == :nomatch
+      assert :binary.match(signed_xml, "<xades:SignatureTimeStamp") == :nomatch
+    end
+  end
+
   test "rejects an alg outside the configured allowlist", ctx do
     Application.put_env(:pkcs11ex, :allowed_algs, [:PS256])
 

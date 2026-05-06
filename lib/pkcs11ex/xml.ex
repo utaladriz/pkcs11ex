@@ -141,13 +141,14 @@ defmodule Pkcs11ex.XML do
          signer_opts = signer_opts(opts, alg),
          {:ok, raw_sig} <-
            Pkcs11ex.sign_bytes(si_canonical, [{:encoding_context, :der} | signer_opts]),
+         {:ok, qp_xml_final} <- maybe_attach_signature_timestamp(qp_xml, raw_sig, opts),
          cert_b64_list = Enum.map(x5c_der_list, &Base.encode64/1),
          signature_xml =
            Builder.signature(
              signed_info_xml,
              Base.encode64(raw_sig),
              cert_b64_list,
-             qp_xml,
+             qp_xml_final,
              signature_id: signature_id
            ),
          {:ok, signed_xml} <- splice_signature(xml, root, signature_xml) do
@@ -259,10 +260,69 @@ defmodule Pkcs11ex.XML do
         :reference_uri,
         :c14n_method,
         :digest_method,
-        :inclusive_namespaces
+        :inclusive_namespaces,
+        :tsa_url,
+        :tsa_timeout
       ])
 
     Keyword.put(cleaned, :alg, alg)
+  end
+
+  # XAdES B-T (ETSI EN 319 132-1 §5.4.1): when `:tsa_url` is set,
+  # request an RFC 3161 TimeStampToken whose hash covers the
+  # canonicalised `<ds:SignatureValue>` element bytes (NOT the raw
+  # signature) and append a `<xades:UnsignedProperties>` block with
+  # `<xades:SignatureTimeStamp>` to the QualifyingProperties.
+  defp maybe_attach_signature_timestamp(qp_xml, raw_sig, opts) do
+    case Keyword.get(opts, :tsa_url) do
+      nil ->
+        {:ok, qp_xml}
+
+      tsa_url ->
+        if Code.ensure_loaded?(Pkcs11ex.Audit.Anchor.RFC3161) do
+          do_attach_signature_timestamp(qp_xml, raw_sig, tsa_url, opts)
+        else
+          {:error, {:bt_failed, :pkcs11ex_audit_not_loaded}}
+        end
+    end
+  end
+
+  @compile {:no_warn_undefined, [Pkcs11ex.Audit.Anchor.RFC3161]}
+
+  defp do_attach_signature_timestamp(qp_xml, raw_sig, tsa_url, opts) do
+    timeout = Keyword.get(opts, :tsa_timeout, 10_000)
+    sig_value_canonical = canonical_signature_value(raw_sig)
+    digest = :crypto.hash(:sha256, sig_value_canonical)
+    rfc3161 = Pkcs11ex.Audit.Anchor.RFC3161
+    timestamp_id = "ts-" <> Builder.random_id()
+
+    with {:ok, %{der: req_der}} <- apply(rfc3161, :build_request, [digest]),
+         {:ok, body} <- apply(rfc3161, :fetch_token, [tsa_url, req_der, [timeout: timeout]]),
+         {:ok, tst_der} <- apply(rfc3161, :extract_token, [body]),
+         {:ok, up_block} <-
+           XAdES.unsigned_signature_timestamp(tst_der: tst_der, timestamp_id: timestamp_id),
+         {:ok, qp_with_up} <- XAdES.splice_unsigned_properties(qp_xml, up_block) do
+      {:ok, qp_with_up}
+    else
+      {:error, reason} -> {:error, {:bt_failed, reason}}
+    end
+  end
+
+  # Build the canonical bytes of the standalone `<ds:SignatureValue>`
+  # element exactly as a verifier would produce by extracting the
+  # element from the signed doc and canonicalising it (after clearing
+  # any inherited default namespace via `canonicalize_subtree`).
+  defp canonical_signature_value(raw_sig) do
+    sig_b64 = Base.encode64(raw_sig)
+
+    elem_xml =
+      ~s(<ds:SignatureValue xmlns:ds="#{Builder.ds_ns()}">) <>
+        sig_b64 <>
+        "</ds:SignatureValue>"
+
+    {:ok, node} = Canonicalizer.parse(elem_xml)
+    {:ok, canonical} = Canonicalizer.canonicalize(node)
+    canonical
   end
 
   # Parse the QP XML, locate the `<xades:SignedProperties>` subtree,

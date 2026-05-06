@@ -47,6 +47,8 @@ defmodule Pkcs11ex.XML.XAdES do
   alias Pkcs11ex.X509
   alias Pkcs11ex.XML.Builder
 
+  @c14n_exclusive_uri "http://www.w3.org/2001/10/xml-exc-c14n#"
+
   @doc """
   Builds the full `<xades:QualifyingProperties>` block ready for
   splicing into the `<ds:Object>` element of a `<ds:Signature>`.
@@ -103,6 +105,76 @@ defmodule Pkcs11ex.XML.XAdES do
           "</xades:QualifyingProperties>"
 
       {:ok, qp}
+    end
+  end
+
+  @doc """
+  Builds the `<xades:UnsignedProperties>` block carrying a
+  `<xades:SignatureTimeStamp>` (XAdES B-T per ETSI EN 319 132-1
+  §5.4.1). The TST is embedded base64-encoded as
+  `<xades:EncapsulatedTimeStamp>`.
+
+      <xades:UnsignedProperties>
+        <xades:UnsignedSignatureProperties>
+          <xades:SignatureTimeStamp Id="...">
+            <ds:CanonicalizationMethod Algorithm="...exc-c14n#"/>
+            <xades:EncapsulatedTimeStamp>...</xades:EncapsulatedTimeStamp>
+          </xades:SignatureTimeStamp>
+        </xades:UnsignedSignatureProperties>
+      </xades:UnsignedProperties>
+
+  Note: this returns just the `<xades:UnsignedProperties>` block.
+  Splice it inside the parent `<xades:QualifyingProperties>` after
+  `<xades:SignedProperties>`.
+
+  Required opts:
+
+    * `:tst_der` — RFC 3161 TimeStampToken DER (the
+      `Pkcs11ex.Audit.Anchor.RFC3161.extract_token/1` output).
+    * `:timestamp_id` — `Id` attribute on the
+      `<xades:SignatureTimeStamp>` element.
+  """
+  @spec unsigned_signature_timestamp(keyword()) :: {:ok, String.t()} | {:error, term()}
+  def unsigned_signature_timestamp(opts) when is_list(opts) do
+    with {:ok, tst_der} <- fetch(opts, :tst_der),
+         {:ok, ts_id} <- fetch(opts, :timestamp_id) do
+      tst_b64 = Base.encode64(tst_der)
+
+      block =
+        "<xades:UnsignedProperties>" <>
+          "<xades:UnsignedSignatureProperties>" <>
+          ~s(<xades:SignatureTimeStamp Id="#{escape_attr(ts_id)}">) <>
+          ~s(<ds:CanonicalizationMethod Algorithm="#{@c14n_exclusive_uri}"></ds:CanonicalizationMethod>) <>
+          "<xades:EncapsulatedTimeStamp>" <>
+          tst_b64 <>
+          "</xades:EncapsulatedTimeStamp>" <>
+          "</xades:SignatureTimeStamp>" <>
+          "</xades:UnsignedSignatureProperties>" <>
+          "</xades:UnsignedProperties>"
+
+      {:ok, block}
+    end
+  end
+
+  @doc """
+  Splices an `<xades:UnsignedProperties>` block into the
+  `<xades:QualifyingProperties>` produced by `qualifying_properties/1`.
+  Inserts immediately before the `</xades:QualifyingProperties>`
+  closing tag.
+  """
+  @spec splice_unsigned_properties(String.t(), String.t()) ::
+          {:ok, String.t()} | {:error, term()}
+  def splice_unsigned_properties(qp_xml, up_block) do
+    closing = "</xades:QualifyingProperties>"
+
+    case :binary.match(qp_xml, closing) do
+      :nomatch ->
+        {:error, {:xades, :qp_closing_tag_not_found}}
+
+      {pos, len} ->
+        prefix = binary_part(qp_xml, 0, pos)
+        suffix = binary_part(qp_xml, pos + len, byte_size(qp_xml) - pos - len)
+        {:ok, prefix <> up_block <> closing <> suffix}
     end
   end
 
