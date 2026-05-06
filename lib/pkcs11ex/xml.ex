@@ -68,6 +68,21 @@ defmodule Pkcs11ex.XML do
   alias Pkcs11ex.X509
   alias Pkcs11ex.XML.{Builder, Canonicalizer, XAdES}
 
+  @ds_local_signature "Signature"
+  @ds_local_signed_info "SignedInfo"
+  @ds_local_signature_method "SignatureMethod"
+  @ds_local_signature_value "SignatureValue"
+  @ds_local_key_info "KeyInfo"
+  @ds_local_x509_data "X509Data"
+  @ds_local_x509_cert "X509Certificate"
+  @ds_local_object "Object"
+  @ds_local_reference "Reference"
+  @ds_local_digest_value "DigestValue"
+  @xades_local_qp "QualifyingProperties"
+  @xades_local_sp "SignedProperties"
+  @xades_local_cert_digest "CertDigest"
+  @xades_local_issuer_serial_v2 "IssuerSerialV2"
+
   @type sign_result :: {:ok, binary()} | {:error, term()}
   @type verify_result :: {:ok, subject_id :: term()} | {:error, term()}
 
@@ -132,10 +147,61 @@ defmodule Pkcs11ex.XML do
   end
 
   @doc """
-  Verify a signed XML document. Implementation lands in Phase 4b.1.6.
+  Verify a XAdES B-B-signed XML document.
+
+  Returns `{:ok, subject_id}` where `subject_id` is whatever the
+  configured `Pkcs11ex.Policy.validate/3` returned. The verify
+  pipeline runs in this order — every step is a checkpoint that
+  can refuse the signature with the documented error class:
+
+    1. Parse the signed XML. Locate the (single) `<ds:Signature>`
+       element. v1 refuses multi-signature documents.
+    2. Extract the embedded `<ds:KeyInfo>` x5c chain.
+    3. **Allowlist gate (architectural invariant).** Synthesise a
+       JOSE-style header and route it through the configured
+       `Pkcs11ex.Policy` — `resolve/2` then `validate/3`. The
+       chain is **untrusted input** until both succeed. No
+       cryptographic check has happened yet.
+    4. Verify the XAdES `<xades:SigningCertificateV2>` actually
+       binds the leaf cert from `<ds:KeyInfo>`:
+       `SHA-256(leaf_der)` must match `<xades:CertDigest>`, and
+       `<xades:IssuerSerialV2>` must match the leaf's issuer +
+       serial.
+    5. Recompute the data `<ds:Reference>` digest: apply the
+       enveloped-signature transform (remove `<Signature>` from
+       the doc), exc-c14n the result, SHA-256.
+    6. Recompute the SignedProperties `<ds:Reference>` digest:
+       canonicalise the `<xades:SignedProperties>` subtree,
+       SHA-256.
+    7. Canonicalise `<ds:SignedInfo>` (subtree extraction with
+       inherited-default-namespace clear) and verify the math
+       against the leaf's SPKI.
+
+  Failures from step 3 short-circuit before any signature math, so
+  callers cannot use `verify/2` as a CPU-bound oracle on
+  attacker-supplied certificates.
   """
   @spec verify(binary() | iodata(), keyword()) :: verify_result()
-  def verify(_doc, _opts \\ []), do: {:error, :not_implemented_in_v1}
+  def verify(doc, opts \\ [])
+
+  def verify(doc, opts) when is_list(opts) do
+    xml = IO.iodata_to_binary(doc)
+
+    with {:ok, root} <- Canonicalizer.parse(xml),
+         {:ok, sig_node} <- locate_signature(root),
+         {:ok, ctx} <- collect_signature_context(sig_node),
+         {:ok, header} <- header_from_chain(ctx.x5c_ders),
+         policy = Keyword.get(opts, :trust_policy, configured_policy()),
+         {:ok, cert, chain} <- policy.resolve(header, opts),
+         {:ok, subject_id} <-
+           policy.validate(cert, chain, Keyword.get(opts, :policy_opts, [])),
+         :ok <- check_xades_cert_binding(ctx, cert),
+         :ok <- check_data_reference(xml, root, sig_node, ctx),
+         :ok <- check_signed_properties_reference(ctx),
+         :ok <- verify_signature_math(ctx, cert) do
+      {:ok, subject_id}
+    end
+  end
 
   # ---------- internals ----------
 
@@ -205,6 +271,323 @@ defmodule Pkcs11ex.XML do
   end
 
   defp signed_properties?(_), do: false
+
+  # ---------- verify-side helpers ----------
+
+  defp locate_signature(root) do
+    sigs = collect_descendants(root, @ds_local_signature)
+
+    case sigs do
+      [] -> {:error, :no_signature_element}
+      [one] -> {:ok, one}
+      _ -> {:error, :multiple_signatures_unsupported_in_v1}
+    end
+  end
+
+  defp collect_signature_context(sig_node) do
+    with {:ok, signed_info} <- find_child_by_local(sig_node, @ds_local_signed_info),
+         {:ok, sig_value_node} <- find_child_by_local(sig_node, @ds_local_signature_value),
+         {:ok, key_info} <- find_child_by_local(sig_node, @ds_local_key_info),
+         {:ok, x509_data} <- find_child_by_local(key_info, @ds_local_x509_data),
+         {:ok, x5c_ders} <- collect_x509_certs(x509_data),
+         {:ok, alg} <- extract_signature_alg(signed_info),
+         {:ok, refs} <- collect_references(signed_info),
+         {:ok, sp_node} <- locate_signed_properties(sig_node),
+         {:ok, raw_sig} <- decode_signature_value(sig_value_node),
+         {:ok, si_canonical} <- Canonicalizer.canonicalize_subtree(signed_info),
+         {:ok, sp_canonical} <- Canonicalizer.canonicalize_subtree(sp_node),
+         {:ok, cert_digest} <- extract_cert_digest(sig_node),
+         {:ok, issuer_serial_v2} <- extract_issuer_serial_v2(sig_node) do
+      ctx = %{
+        signed_info_node: signed_info,
+        signed_info_canonical: si_canonical,
+        sig_value_raw: raw_sig,
+        x5c_ders: x5c_ders,
+        alg: alg,
+        references: refs,
+        signed_properties_node: sp_node,
+        signed_properties_canonical: sp_canonical,
+        cert_digest: cert_digest,
+        issuer_serial_v2_der: issuer_serial_v2
+      }
+
+      {:ok, ctx}
+    end
+  end
+
+  defp header_from_chain([]), do: {:error, :missing_x5c}
+
+  defp header_from_chain(certs) when is_list(certs) do
+    {:ok, %{"x5c" => Enum.map(certs, &Base.encode64/1)}}
+  end
+
+  defp configured_policy do
+    Application.get_env(:pkcs11ex, :trust_policy, Pkcs11ex.Policy.PinnedRegistry)
+  end
+
+  defp check_xades_cert_binding(ctx, %X509{der: leaf_der}) do
+    expected_digest = :crypto.hash(:sha256, leaf_der)
+
+    cond do
+      ctx.cert_digest != expected_digest ->
+        {:error, :xades_cert_digest_mismatch}
+
+      true ->
+        case build_expected_issuer_serial_v2(leaf_der) do
+          {:ok, expected_der} when expected_der == ctx.issuer_serial_v2_der ->
+            :ok
+
+          {:ok, _} ->
+            {:error, :xades_issuer_serial_mismatch}
+
+          {:error, _} = err ->
+            err
+        end
+    end
+  end
+
+  defp build_expected_issuer_serial_v2(leaf_der) do
+    {:ok, leaf} = X509.from_der(leaf_der)
+    XAdES.build_issuer_serial_v2_der(leaf)
+  end
+
+  # Apply the enveloped-signature transform: remove the <Signature>
+  # element from the document, then exc-c14n the result, SHA-256.
+  defp check_data_reference(_xml, root, sig_node, ctx) do
+    expected_digest = digest_for_reference_uri(ctx.references, "")
+    doc_with_sig_removed = strip_signature(root, sig_node)
+
+    with {:ok, canonical} <- Canonicalizer.canonicalize(doc_with_sig_removed) do
+      actual = :crypto.hash(:sha256, canonical)
+
+      if actual == expected_digest do
+        :ok
+      else
+        {:error, :digest_mismatch}
+      end
+    end
+  end
+
+  defp check_signed_properties_reference(ctx) do
+    sp_id = elem_id(ctx.signed_properties_node)
+    expected_digest = digest_for_reference_uri(ctx.references, "##{sp_id}")
+    actual = :crypto.hash(:sha256, ctx.signed_properties_canonical)
+
+    if actual == expected_digest do
+      :ok
+    else
+      {:error, :digest_mismatch}
+    end
+  end
+
+  defp verify_signature_math(%{alg: :PS256} = ctx, %X509{public_key: pk}) do
+    if :public_key.verify(ctx.signed_info_canonical, :sha256, ctx.sig_value_raw, pk,
+         rsa_padding: :rsa_pkcs1_pss_padding,
+         rsa_pss_saltlen: 32,
+         rsa_mgf1_md: :sha256
+       ) do
+      :ok
+    else
+      {:error, :signature_invalid}
+    end
+  end
+
+  defp verify_signature_math(%{alg: :RS256} = ctx, %X509{public_key: pk}) do
+    if :public_key.verify(ctx.signed_info_canonical, :sha256, ctx.sig_value_raw, pk) do
+      :ok
+    else
+      {:error, :signature_invalid}
+    end
+  end
+
+  defp verify_signature_math(%{alg: alg}, _cert),
+    do: {:error, {:unsupported_signature_algorithm, alg}}
+
+  # ---------- xmerl tree helpers ----------
+
+  defp collect_descendants({:xmlElement, _, _, _, _, _, _, _, content, _, _, _} = node, local_name) do
+    self_match = if local_name?(node, local_name), do: [node], else: []
+
+    children =
+      content
+      |> Enum.flat_map(fn child ->
+        case child do
+          {:xmlElement, _, _, _, _, _, _, _, _, _, _, _} ->
+            collect_descendants(child, local_name)
+
+          _ ->
+            []
+        end
+      end)
+
+    self_match ++ children
+  end
+
+  defp collect_descendants(_, _), do: []
+
+  defp find_child_by_local({:xmlElement, _, _, _, _, _, _, _, content, _, _, _}, local_name) do
+    case Enum.find(content, fn
+           {:xmlElement, _, _, _, _, _, _, _, _, _, _, _} = e -> local_name?(e, local_name)
+           _ -> false
+         end) do
+      nil -> {:error, {:xml, {:child_not_found, local_name}}}
+      node -> {:ok, node}
+    end
+  end
+
+  defp local_name?({:xmlElement, name, _, _, _, _, _, _, _, _, _, _}, local) do
+    name_str = Atom.to_string(name)
+    name_str == local or String.ends_with?(name_str, ":" <> local)
+  end
+
+  defp local_name?(_, _), do: false
+
+  defp collect_x509_certs(x509_data_node) do
+    cert_nodes = collect_descendants(x509_data_node, @ds_local_x509_cert)
+
+    if cert_nodes == [] do
+      {:error, :missing_x5c}
+    else
+      ders =
+        Enum.map(cert_nodes, fn n ->
+          n |> text_content() |> String.replace(~r/\s+/, "") |> Base.decode64!()
+        end)
+
+      {:ok, ders}
+    end
+  end
+
+  defp extract_signature_alg(signed_info_node) do
+    case find_child_by_local(signed_info_node, @ds_local_signature_method) do
+      {:ok, sm_node} ->
+        algo = attr_value(sm_node, "Algorithm")
+        Builder.alg_from_signature_method_uri(algo || "")
+
+      err ->
+        err
+    end
+  end
+
+  defp collect_references(signed_info_node) do
+    refs = collect_descendants(signed_info_node, @ds_local_reference)
+
+    {:ok,
+     Enum.map(refs, fn r ->
+       %{
+         uri: attr_value(r, "URI") || "",
+         digest_value:
+           r
+           |> find_child_by_local(@ds_local_digest_value)
+           |> case do
+             {:ok, n} -> n |> text_content() |> String.replace(~r/\s+/, "") |> Base.decode64!()
+             _ -> nil
+           end
+       }
+     end)}
+  end
+
+  defp locate_signed_properties(sig_node) do
+    case collect_descendants(sig_node, @xades_local_sp) do
+      [sp] -> {:ok, sp}
+      [] -> {:error, {:xml, :signed_properties_not_found}}
+      _ -> {:error, {:xml, :multiple_signed_properties}}
+    end
+  end
+
+  defp decode_signature_value(sig_value_node) do
+    raw =
+      sig_value_node
+      |> text_content()
+      |> String.replace(~r/\s+/, "")
+      |> Base.decode64!()
+
+    {:ok, raw}
+  end
+
+  defp extract_cert_digest(sig_node) do
+    case collect_descendants(sig_node, @xades_local_cert_digest) do
+      [cd_node] ->
+        case find_child_by_local(cd_node, @ds_local_digest_value) do
+          {:ok, dv_node} ->
+            digest_b64 = dv_node |> text_content() |> String.replace(~r/\s+/, "")
+            {:ok, Base.decode64!(digest_b64)}
+
+          err ->
+            err
+        end
+
+      _ ->
+        {:error, {:xades_missing_cert_digest, nil}}
+    end
+  end
+
+  defp extract_issuer_serial_v2(sig_node) do
+    case collect_descendants(sig_node, @xades_local_issuer_serial_v2) do
+      [is_node] ->
+        b64 = is_node |> text_content() |> String.replace(~r/\s+/, "")
+        {:ok, Base.decode64!(b64)}
+
+      _ ->
+        {:error, {:xades_missing_issuer_serial_v2, nil}}
+    end
+  end
+
+  defp digest_for_reference_uri(refs, uri) do
+    case Enum.find(refs, fn r -> r.uri == uri end) do
+      nil -> nil
+      r -> r.digest_value
+    end
+  end
+
+  defp elem_id({:xmlElement, _, _, _, _, _, _, attrs, _, _, _, _}) do
+    case Enum.find(attrs, fn
+           {:xmlAttribute, name, _, _, _, _, _, _, _, _} -> Atom.to_string(name) == "Id"
+         end) do
+      {:xmlAttribute, _, _, _, _, _, _, _, value, _} ->
+        IO.iodata_to_binary([value])
+
+      _ ->
+        nil
+    end
+  end
+
+  defp attr_value({:xmlElement, _, _, _, _, _, _, attrs, _, _, _, _}, attr_name) do
+    case Enum.find(attrs, fn
+           {:xmlAttribute, name, _, _, _, _, _, _, _, _} -> Atom.to_string(name) == attr_name
+         end) do
+      {:xmlAttribute, _, _, _, _, _, _, _, value, _} -> IO.iodata_to_binary([value])
+      _ -> nil
+    end
+  end
+
+  defp text_content({:xmlElement, _, _, _, _, _, _, _, content, _, _, _}) do
+    content
+    |> Enum.flat_map(fn
+      {:xmlText, _, _, _, value, _} -> [value]
+      _ -> []
+    end)
+    |> IO.iodata_to_binary()
+  end
+
+  defp text_content(_), do: ""
+
+  # Walk the parsed tree, returning a copy with `target_node`
+  # excised from its parent's content list. Used to apply the
+  # enveloped-signature transform.
+  defp strip_signature(node, target_node) do
+    case node do
+      {:xmlElement, _, _, _, _, _, _, _, content, _, _, _} ->
+        new_content =
+          content
+          |> Enum.reject(fn child -> child === target_node end)
+          |> Enum.map(fn child -> strip_signature(child, target_node) end)
+
+        put_elem(node, 8, new_content)
+
+      _ ->
+        node
+    end
+  end
 
   # Splice the `<ds:Signature>` element into the document before the
   # root's closing tag. The root name comes from the parsed xmerl

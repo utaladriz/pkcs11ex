@@ -50,6 +50,7 @@ defmodule Pkcs11ex.XMLSofthsmTest do
       true ->
         {:ok, ctx} = bootstrap(driver, softhsm2_util)
         Application.put_env(:pkcs11ex, :allowed_algs, [:PS256])
+        Application.put_env(:pkcs11ex, :trust_policy, Pkcs11ex.Policy.Allow)
         {:ok, ctx}
     end
   end
@@ -133,6 +134,72 @@ defmodule Pkcs11ex.XMLSofthsmTest do
     expected_data_digest = :crypto.hash(:sha256, base_canonical) |> Base.encode64()
     assert signed_xml =~ ~s(<ds:DigestValue>#{expected_data_digest}</ds:DigestValue>)
   end
+
+  describe "verify/2 round-trip" do
+    setup ctx do
+      base_xml = sii_dte_fixture()
+
+      {:ok, signed_xml} =
+        XML.sign(base_xml,
+          module: ctx.pkcs11_module,
+          slot_id: ctx.slot_id,
+          pin: ctx.pin,
+          key_label: ctx.key_label,
+          alg: :PS256,
+          x5c: ctx.leaf_der
+        )
+
+      Map.put(ctx, :signed_xml, signed_xml)
+    end
+
+    test "happy path — Allow policy lets the signed XML through", ctx do
+      assert {:ok, :anyone} = XML.verify(ctx.signed_xml)
+    end
+
+    test "tampered byte inside the signed range surfaces :digest_mismatch", ctx do
+      pdf = ctx.signed_xml
+      # The MntTotal value sits in the data range. Flipping a digit
+      # invalidates the data Reference's digest.
+      tampered = String.replace(pdf, "<MntTotal>1190</MntTotal>", "<MntTotal>9999</MntTotal>")
+      assert {:error, :digest_mismatch} = XML.verify(tampered)
+    end
+
+    test "modified SignatureValue bytes surface :signature_invalid", ctx do
+      [_, sig_b64] = Regex.run(~r/<ds:SignatureValue>(.+?)<\/ds:SignatureValue>/s, ctx.signed_xml)
+      flipped_b64 = String.replace_prefix(sig_b64, String.first(sig_b64), flip(String.first(sig_b64)))
+      tampered = String.replace(ctx.signed_xml, sig_b64, flipped_b64)
+      assert {:error, :signature_invalid} = XML.verify(tampered)
+    end
+
+    test "policy refusal short-circuits before any signature math", ctx do
+      Application.put_env(:pkcs11ex, :trust_policy, Pkcs11ex.XMLSofthsmTest.RefusingPolicy)
+      on_exit(fn -> Application.put_env(:pkcs11ex, :trust_policy, Pkcs11ex.Policy.Allow) end)
+      assert {:error, :unknown_signer} = XML.verify(ctx.signed_xml)
+    end
+
+    test "XML without any <ds:Signature> surfaces :no_signature_element" do
+      assert {:error, :no_signature_element} = XML.verify(sii_dte_fixture())
+    end
+
+    test "tampered SigningCertificateV2/CertDigest surfaces :xades_cert_digest_mismatch", ctx do
+      [_, before_digest] = Regex.run(~r/<xades:CertDigest>.*?<ds:DigestValue>([^<]+)/s, ctx.signed_xml)
+      forged = Base.encode64(:crypto.hash(:sha256, "not the leaf"))
+      tampered = String.replace(ctx.signed_xml, before_digest, forged)
+      assert {:error, :xades_cert_digest_mismatch} = XML.verify(tampered)
+    end
+  end
+
+  defmodule RefusingPolicy do
+    @moduledoc false
+    @behaviour Pkcs11ex.Policy
+    @impl true
+    def resolve(_h, _o), do: {:error, :unknown_signer}
+    @impl true
+    def validate(_c, _ch, _o), do: {:error, :unknown_signer}
+  end
+
+  defp flip("A"), do: "B"
+  defp flip(c), do: <<List.first(:binary.bin_to_list(c)) - 1::8>>
 
   test "rejects an alg outside the configured allowlist", ctx do
     Application.put_env(:pkcs11ex, :allowed_algs, [:PS256])

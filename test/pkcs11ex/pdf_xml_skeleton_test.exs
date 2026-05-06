@@ -34,8 +34,8 @@ defmodule Pkcs11ex.PDFXMLSkeletonTest do
       assert {:error, :missing_x5c} = Pkcs11ex.XML.sign("<doc/>", alg: :PS256)
     end
 
-    test "verify/2 returns :not_implemented_in_v1 (lands in step 4b.1.6)" do
-      assert {:error, :not_implemented_in_v1} = Pkcs11ex.XML.verify("<doc/>")
+    test "verify/2 surfaces :no_signature_element when there is no <ds:Signature>" do
+      assert {:error, :no_signature_element} = Pkcs11ex.XML.verify("<doc/>")
     end
   end
 end
