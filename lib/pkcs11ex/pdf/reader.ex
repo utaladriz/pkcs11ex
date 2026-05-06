@@ -114,6 +114,79 @@ defmodule Pkcs11ex.PDF.Reader do
     end
   end
 
+  @doc """
+  Reads the textual body of the indirect object at the given offset.
+  Returns the bytes between `obj` and `endobj`, trimmed.
+
+  Used by the Writer to extract the catalog dict so an incremental
+  update can re-emit it with a merged `/AcroForm` entry. Does not
+  parse stream contents; the bytes are returned verbatim.
+  """
+  @spec read_object_body(binary(), non_neg_integer()) ::
+          {:ok, binary()} | {:error, error()}
+  def read_object_body(pdf, offset) when is_binary(pdf) and is_integer(offset) do
+    if offset < 0 or offset >= byte_size(pdf) do
+      {:error, {:malformed_pdf, :object_offset_out_of_range}}
+    else
+      slice = binary_part(pdf, offset, byte_size(pdf) - offset)
+
+      case Regex.run(~r/^\d+\s+\d+\s+obj\b/, slice, return: :index) do
+        [{0, header_len}] ->
+          after_header = binary_part(slice, header_len, byte_size(slice) - header_len)
+
+          case :binary.match(after_header, "endobj") do
+            {pos, _len} ->
+              {:ok, after_header |> binary_part(0, pos) |> String.trim()}
+
+            :nomatch ->
+              {:error, {:malformed_pdf, :endobj_missing}}
+          end
+
+        _ ->
+          {:error, {:malformed_pdf, :object_header_invalid}}
+      end
+    end
+  end
+
+  @doc """
+  Returns the catalog dict body (the bytes between `<<` and `>>` of the
+  object pointed at by `/Root`). The catalog is what an incremental
+  update must re-emit when adding a `/Sig` field — its `/AcroForm` and
+  `/Pages` entries need to be preserved.
+
+  Returns `{:error, {:malformed_pdf, :catalog_not_indirect}}` if the
+  catalog body isn't a plain dict (rare; would only happen if /Root
+  pointed at an object stream).
+  """
+  @spec read_catalog_body(binary()) :: {:ok, binary()} | {:error, error()}
+  def read_catalog_body(pdf) do
+    with {:ok, %Revision{root: root, xref_offsets: offsets}} <- parse(pdf) do
+      case root do
+        nil ->
+          {:error, {:malformed_pdf, :root_missing}}
+
+        {num, _gen} ->
+          case Map.fetch(offsets, num) do
+            :error ->
+              {:error, {:malformed_pdf, :root_offset_unknown}}
+
+            {:ok, obj_offset} ->
+              case read_object_body(pdf, obj_offset) do
+                {:ok, body} -> extract_catalog_dict(body)
+                err -> err
+              end
+          end
+      end
+    end
+  end
+
+  defp extract_catalog_dict(body) do
+    case extract_dict_text(body) do
+      {:ok, text} -> {:ok, text}
+      :error -> {:error, {:malformed_pdf, :catalog_not_indirect}}
+    end
+  end
+
   # --- internal ---
 
   defp parse_section(<<"xref\r\n", rest::binary>>, startxref), do: do_parse(rest, startxref)
