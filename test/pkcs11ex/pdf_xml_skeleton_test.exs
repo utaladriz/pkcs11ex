@@ -12,13 +12,17 @@ defmodule Pkcs11ex.PDFXMLSkeletonTest do
   use ExUnit.Case, async: true
 
   describe "Pkcs11ex.PDF" do
-    test "sign/2 returns :not_implemented_in_v1" do
-      assert {:error, :not_implemented_in_v1} =
-               Pkcs11ex.PDF.sign("dummy pdf", signer: :foo, alg: :PS256)
+    # `sign/2` now actually runs the pipeline (Phase 4a step 8). The skeleton
+    # contract for it has moved to `Pkcs11ex.PDF.WriterTest` and the SoftHSM
+    # end-to-end. We keep one assertion here to pin the surface error class
+    # for callers that omit `:x5c`.
+    test "sign/2 surfaces :missing_x5c when the chain isn't supplied" do
+      assert {:error, :missing_x5c} =
+               Pkcs11ex.PDF.sign("dummy pdf", alg: :PS256)
     end
 
-    test "verify/2 returns :not_implemented_in_v1" do
-      assert {:error, :not_implemented_in_v1} = Pkcs11ex.PDF.verify("dummy pdf")
+    test "verify/2 surfaces :no_signature when there is no /Sig dict" do
+      assert {:error, :no_signature} = Pkcs11ex.PDF.verify("dummy pdf")
     end
   end
 

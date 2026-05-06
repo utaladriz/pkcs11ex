@@ -571,18 +571,38 @@ The `!` variants raise `Pkcs11ex.Error`. Use only where errors are programming b
 
 **`chain_sign/3`:** verifies `inner_jws` against the trust policy, builds an outer payload as specified in `specs.md` §4.1, signs it with the configured signer (defaults match `sign/2`), and returns `{:ok, outer_jws, inner_subject_id}`. Inner verify failure aborts before any outer signing.
 
-### 3.3 `Pkcs11ex.PDF` *(Phase 4 placeholder)*
+### 3.3 `Pkcs11ex.PDF`
 
-Specified in the Phase 4 design pass. Anticipated surface:
+PAdES B-B sign + verify. Implementation lands in Phase 4a (steps 6–11).
 
 ```elixir
-@spec sign(pdf_in :: binary() | Enumerable.t(), opts :: keyword()) ::
+@spec sign(pdf_in :: binary(), opts :: keyword()) ::
         {:ok, pdf_out :: binary()} | {:error, term()}
 @spec verify(pdf :: binary(), opts :: keyword()) ::
         {:ok, subject_id()} | {:error, term()}
 ```
 
-Profile target: PAdES B-B for v1 of this adapter. Streaming input (`Enumerable.t()`) lets callers sign multi-GB PDFs without loading the file into memory.
+`sign/2` required opts: `:x5c` (leaf-first chain) plus PKCS#11 keying
+opts (`:module`, `:slot_id`, `:pin`, `:key_label`, or canonical
+`:signer`). Optional: `:alg` (`:PS256` default, `:RS256`),
+`:signing_time`, `:placeholder_size`, `:reason`, `:location`,
+`:contact_info`. The output is the original PDF plus an incremental
+update with a `/Sig` dict whose `/Contents` is the HSM-produced CMS.
+
+`verify/2` runs in this order — every step is a refusal point:
+
+1. Locate the (single) `/Sig` dict and extract `/ByteRange` +
+   `/Contents`. v1 refuses multiple `/Sig` dicts.
+2. **Append-attack detection.** Refuse if `c + d` ≠ file size.
+3. Parse the CMS `ContentInfo`.
+4. **Allowlist gate (architectural invariant).** Synthesise a
+   JOSE-style header from the embedded chain and run it through
+   `Pkcs11ex.Policy` — `resolve/2` then `validate/3`. The chain is
+   untrusted input until both succeed.
+5. Match `SHA-256(signed_input)` against the CMS `messageDigest`.
+6. Verify the signature math.
+
+Streaming input (`Enumerable.t()`) is post-v1.
 
 ### 3.4 `Pkcs11ex.XML` *(Phase 4 placeholder)*
 
@@ -725,11 +745,39 @@ Configuration errors are **raised**, not returned: invalid configuration prevent
 | `:cert_not_found`                       | key/cert         | No certificate matched in the slot for `x5c` population.                       |
 | `:incompatible_alg`                     | key/cert         | Requested `alg` is not in `compatible_key_types/0` for the resolved key.       |
 | `:no_signing_slot`                      | config/runtime   | Sign called in a verify-only deployment.                                       |
+| `:no_signature`                         | PDF              | `Pkcs11ex.PDF.verify/2` got a PDF that doesn't carry a `/Sig` dict.            |
+| `:multiple_signatures_unsupported_in_v1` | PDF             | More than one `/Sig` dict in the PDF; multi-signature support is post-v1.      |
+| `:malformed_signature_contents`         | PDF              | `/Contents` couldn't be hex-decoded.                                           |
+| `:byte_range_out_of_bounds`             | PDF              | `/ByteRange` claimed bytes past the end of the file.                           |
+| `:message_digest_mismatch`              | PDF              | `SHA-256` of the bytes covered by `/ByteRange` doesn't match the CMS `messageDigest` attribute — canonical tampered-byte signal. |
+| `:incremental_update_after_signature`   | PDF              | Bytes exist beyond the signed range (`c + d < byte_size(pdf)`); fail-fast detection of the PAdES "append attack". |
+| `{:malformed_pdf, atom}`                | PDF              | Reader-side structural failure: `:startxref_not_found`, `:xref_keyword_missing`, `:xref_subsection_header_invalid`, `:xref_entry_malformed`, `:trailer_keyword_missing`, `:xref_stream_unsupported`, `:prev_chain_cycle`, etc. |
+| `{:writer, :existing_acroform_unsupported_in_v1}` | PDF    | Base PDF already carries `/AcroForm`; v1 won't merge.                          |
+| `{:writer, :placeholder_size_out_of_range}` | PDF          | `:placeholder_size` outside `[256, 1 MiB]`.                                    |
+| `{:writer, :cms_der_too_large}`         | PDF              | The CMS DER won't fit the prepared `/Contents` placeholder — caller must raise `:placeholder_size`. |
 | `:malformed_jws`                        | JWS              | Header not parseable, signature segment missing/extra.                         |
 | `:missing_required_header`              | JWS              | One of `alg`, `crit`, `x5c` is absent.                                         |
 | `:b64_crit_violation`                   | JWS              | `b64` is `false` but not in `crit`, or vice versa (RFC 7797 §6).               |
 | `:disallowed_alg`                       | JWS              | Header `alg` not in the effective allowlist.                                   |
 | `:unsupported_alg`                      | JWS              | Header `alg` is not registered in `:algorithms`.                               |
+| `{:cms_codec, type, reason}`            | CMS              | OTP ASN.1 codec rejected an encode/decode for `type` (e.g. `:ContentInfo`, `:SignerInfo`, `:SignedAttributes`). Treat as malformed input. |
+| `:missing_digest`                       | CMS              | `Pkcs11ex.CMS.SignedAttributes.build/1` called without `:digest`.              |
+| `:invalid_digest`                       | CMS              | `:digest` was not a binary (e.g. iolist, charlist).                            |
+| `:empty_certificate_chain`              | CMS              | `Pkcs11ex.CMS.SignedData.build/3` called with `certificates: []`.              |
+| `{:unsupported_digest_algorithm, atom}` | CMS              | Only `:sha256` is wired in v1.                                                 |
+| `{:unsupported_signature_algorithm, atom}` | CMS           | Only `:rsa_sha256` and `:rsa_pss_sha256` are wired in v1.                      |
+| `:invalid_leaf_certificate`             | CMS              | First entry of `:certificates` was not parseable as X.509.                     |
+| `:invalid_certificate_entry`            | CMS              | A non-leaf chain entry was not a `Pkcs11ex.X509` struct or DER binary.         |
+| `:not_signed_data` / `{:not_signed_data, oid}` | CMS       | `Pkcs11ex.CMS.SignedData.parse/1` got a ContentInfo whose contentType is not `id-signedData`. |
+| `:no_signer_info`                       | CMS              | Parsed SignedData carried zero SignerInfos.                                    |
+| `:multiple_signer_info_unsupported_in_v1` | CMS            | Parsed SignedData carried more than one SignerInfo. Multi-signer support is post-v1. |
+| `:no_certificates`                      | CMS              | Parsed SignedData omitted the `certificates` SET (degenerate signer-only CMS not supported in v1). |
+| `:unsupported_certificate_choice`       | CMS              | Parsed SignedData embeds an attribute-cert / extended-cert / `other` CHOICE; only plain X.509 is supported. |
+| `:invalid_embedded_certificate`         | CMS              | Embedded certificate failed `:public_key.pkix_decode_cert/2`.                  |
+| `:leaf_certificate_not_found_in_chain`  | CMS              | SignerInfo `issuerAndSerialNumber` did not match any embedded certificate.     |
+| `:subject_key_identifier_unsupported_in_v1` | CMS          | SignerInfo uses `subjectKeyIdentifier`; only `issuerAndSerialNumber` is supported in v1. |
+| `{:missing_attribute, oid}`             | CMS              | Required signed attribute (e.g. `id-contentType`, `id-messageDigest`) absent.  |
+| `{:multi_value_attribute, oid}`         | CMS              | Signed attribute carried zero or >1 values; v1 expects exactly one.            |
 | `:unknown_signer`                       | trust policy     | `Pkcs11ex.Policy.resolve/2` returned no allowlist match (§2.3.1 step 3).       |
 | `:hint_mismatch`                        | trust policy     | Multiple identity hints in the header disagree (`x5c` vs `x5t#S256` vs `kid`). |
 | `:untrusted_signer`                     | trust policy     | `Pkcs11ex.Policy.validate/3` rejected the signer.                              |
