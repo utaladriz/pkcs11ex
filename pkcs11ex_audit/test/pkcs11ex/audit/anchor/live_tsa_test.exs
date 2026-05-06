@@ -61,6 +61,17 @@ defmodule Pkcs11ex.Audit.Anchor.LiveTSATest do
     # present somewhere in the response body.
     assert :binary.match(body, @signed_data_oid_bytes) != :nomatch,
            "Response body lacks the CMS SignedData OID — not a real TST"
+
+    # extract_token/1 strips PKIStatusInfo and returns the bare TST
+    # (a ContentInfo we can embed in CMS unsignedAttrs or
+    # <xades:EncapsulatedTimeStamp>). The result must itself start with
+    # a DER SEQUENCE and carry the id-signedData OID.
+    assert {:ok, tst} = RFC3161.extract_token(body)
+    assert <<0x30, _::binary>> = tst
+    assert :binary.match(tst, @signed_data_oid_bytes) != :nomatch
+
+    assert byte_size(tst) < byte_size(body),
+           "TST should be smaller than the wrapping TimeStampResp"
   end
 
   test "anchor_head stores the live TST and chain still verifies", %{

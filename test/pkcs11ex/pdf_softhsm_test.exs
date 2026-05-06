@@ -284,6 +284,90 @@ defmodule Pkcs11ex.PDFSofthsmTest do
     end
   end
 
+  describe "PAdES B-T (Phase 5 step 8)" do
+    @describetag :tsa
+
+    @default_tsa "http://timestamp.digicert.com"
+    @signed_data_oid_bytes <<0x06, 0x09, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x07, 0x02>>
+    # id-aa-signatureTimeStampToken: 1.2.840.113549.1.9.16.2.14
+    @id_aa_sig_ts_oid_bytes <<0x06, 0x0B, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x09, 0x10, 0x02, 0x0E>>
+
+    setup do
+      tsa_url = System.get_env("PKCS11EX_TSA_URL") || @default_tsa
+      {:ok, tsa_url: tsa_url}
+    end
+
+    test ":tsa_url attaches a real TimeStampToken as id-aa-signatureTimeStampToken",
+         %{
+           tsa_url: tsa_url
+         } = ctx do
+      base_pdf = build_minimal_pdf()
+
+      {:ok, signed_pdf} =
+        PDF.sign(base_pdf,
+          module: ctx.pkcs11_module,
+          slot_id: ctx.slot_id,
+          pin: ctx.pin,
+          key_label: ctx.key_label,
+          alg: :PS256,
+          x5c: ctx.leaf_der,
+          tsa_url: tsa_url,
+          tsa_timeout: 15_000,
+          # 4 KiB B-B fits; B-T adds a TST (~5–7 KiB on DigiCert) so we
+          # need a fatter placeholder.
+          placeholder_size: 16_384
+        )
+
+      # B-T sign-side: the signed PDF still passes B-B verify (the
+      # timestamp lives in unsignedAttrs and is not covered by the
+      # signature math).
+      assert {:ok, :anyone} = PDF.verify(signed_pdf)
+
+      # The CMS embedded in /Contents now carries the signature TST.
+      {byte_range, contents_hex} = extract_signature_artifacts(signed_pdf)
+      cms_padded = decode_hex_strict_upper(contents_hex)
+      cms_der = strip_trailing_zero_padding(cms_padded)
+
+      assert :binary.match(cms_der, @id_aa_sig_ts_oid_bytes) != :nomatch,
+             "CMS lacks id-aa-signatureTimeStampToken — B-T attribute missing"
+
+      # The TST itself is a CMS SignedData; its OID must appear inside
+      # the encoded unsigned-attribute value.
+      sigts_pos = :binary.match(cms_der, @id_aa_sig_ts_oid_bytes) |> elem(0)
+      tail = binary_part(cms_der, sigts_pos, byte_size(cms_der) - sigts_pos)
+
+      assert :binary.match(tail, @signed_data_oid_bytes) != :nomatch,
+             "TST not embedded as a SignedData ContentInfo"
+
+      [_a, b, c, d] = byte_range
+      _ = b
+      _ = c
+      _ = d
+    end
+
+    test "without :tsa_url, the CMS does not carry id-aa-signatureTimeStampToken", ctx do
+      base_pdf = build_minimal_pdf()
+
+      {:ok, signed_pdf} =
+        PDF.sign(base_pdf,
+          module: ctx.pkcs11_module,
+          slot_id: ctx.slot_id,
+          pin: ctx.pin,
+          key_label: ctx.key_label,
+          alg: :PS256,
+          x5c: ctx.leaf_der,
+          placeholder_size: 4_096
+        )
+
+      {_, contents_hex} = extract_signature_artifacts(signed_pdf)
+      cms_padded = decode_hex_strict_upper(contents_hex)
+      cms_der = strip_trailing_zero_padding(cms_padded)
+
+      assert :binary.match(cms_der, @id_aa_sig_ts_oid_bytes) == :nomatch,
+             "B-B PDF unexpectedly carries the B-T timestamp attribute"
+    end
+  end
+
   test "errors when /Sig DER would overflow the placeholder", ctx do
     base_pdf = build_minimal_pdf()
 

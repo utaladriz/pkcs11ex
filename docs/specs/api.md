@@ -586,8 +586,12 @@ PAdES B-B sign + verify. Implementation lands in Phase 4a (steps 6–11).
 opts (`:module`, `:slot_id`, `:pin`, `:key_label`, or canonical
 `:signer`). Optional: `:alg` (`:PS256` default, `:RS256`),
 `:signing_time`, `:placeholder_size`, `:reason`, `:location`,
-`:contact_info`. The output is the original PDF plus an incremental
-update with a `/Sig` dict whose `/Contents` is the HSM-produced CMS.
+`:contact_info`, **`:tsa_url`** + `:tsa_timeout` (PAdES B-T —
+attaches an RFC 3161 TimeStampToken as the
+`id-aa-signatureTimeStampToken` CMS unsigned attribute; raise
+`:placeholder_size` to ~16 KiB to fit the TST). The output is the
+original PDF plus an incremental update with a `/Sig` dict whose
+`/Contents` is the HSM-produced CMS.
 
 `verify/2` runs in this order — every step is a refusal point:
 
@@ -619,10 +623,16 @@ in Phase 4b.
 `sign/2` required opts: `:x5c` (leaf-first chain) plus PKCS#11
 keying opts (`:module`, `:slot_id`, `:pin`, `:key_label`, or
 canonical `:signer`). Optional: `:alg` (`:PS256` default,
-`:RS256`), `:signing_time`. Output is the original XML with an
-enveloped `<ds:Signature>` element spliced before the root's
-closing tag, carrying the XAdES `<xades:QualifyingProperties>`
-including `<xades:SigningCertificateV2>` (RFC 5035 IssuerSerialV2).
+`:RS256`), `:signing_time`, **`:tsa_url`** + `:tsa_timeout`
+(XAdES B-T — attaches an RFC 3161 TimeStampToken as
+`<xades:UnsignedProperties>` →
+`<xades:UnsignedSignatureProperties>` →
+`<xades:SignatureTimeStamp>`, per ETSI EN 319 132-1 §5.4.1; the
+TST hash covers the canonicalised `<ds:SignatureValue>` element
+bytes). Output is the original XML with an enveloped
+`<ds:Signature>` element spliced before the root's closing tag,
+carrying the XAdES `<xades:QualifyingProperties>` including
+`<xades:SigningCertificateV2>` (RFC 5035 IssuerSerialV2).
 
 Canonicalisation: **Exclusive XML Canonicalization 1.0** is
 mandatory and the only choice in v1. Digest method: SHA-256.
@@ -800,6 +810,12 @@ Configuration errors are **raised**, not returned: invalid configuration prevent
 | `:xades_issuer_serial_mismatch`         | XML              | XAdES `<IssuerSerialV2>` does not match the leaf cert's issuer + serial.       |
 | `{:c14n, atom \| reason}`               | XML              | `xmerl_c14n` failed (e.g. `:unsupported_canonicalization`).                    |
 | `{:unsupported_signature_method, uri}`  | XML              | `<ds:SignatureMethod>` URI is not one we wired up (only RFC 4051 `rsa-sha256` and `sha256-rsa-MGF1` in v1). |
+| `{:bt_failed, :pkcs11ex_audit_not_loaded}` | PDF / XML     | `:tsa_url` was supplied but the optional `pkcs11ex_audit` dependency isn't loaded. Add it to your deps to enable B-T. |
+| `{:bt_failed, {:tsa_status, n}}`        | PDF / XML        | TSA returned a non-granted PKIStatus (other than `granted (0)` / `grantedWithMods (1)`). |
+| `{:bt_failed, {:tsa_http, reason}}`     | PDF / XML        | The TSA HTTP request failed (network error, timeout). The TST is not attached and no signature is produced. |
+| `{:bt_failed, {:tsa_http_status, n}}`   | PDF / XML        | TSA returned a non-200 HTTP status.                                            |
+| `{:bt_failed, :missing_time_stamp_token}` | PDF / XML      | TSA response decoded as PKIStatus granted but contained no TimeStampToken element. |
+| `{:bt_failed, {:malformed_tsa_response, _}}` | PDF / XML   | TSA response wasn't a parseable DER SEQUENCE.                                  |
 | `:malformed_jws`                        | JWS              | Header not parseable, signature segment missing/extra.                         |
 | `:missing_required_header`              | JWS              | One of `alg`, `crit`, `x5c` is absent.                                         |
 | `:b64_crit_violation`                   | JWS              | `b64` is `false` but not in `crit`, or vice versa (RFC 7797 §6).               |
