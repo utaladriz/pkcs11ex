@@ -604,18 +604,56 @@ update with a `/Sig` dict whose `/Contents` is the HSM-produced CMS.
 
 Streaming input (`Enumerable.t()`) is post-v1.
 
-### 3.4 `Pkcs11ex.XML` *(Phase 4 placeholder)*
+### 3.4 `Pkcs11ex.XML`
 
-Specified in the Phase 4 design pass. Anticipated surface:
+XAdES Baseline B (B-B) sign + verify on top of W3C XML-DSig. Lands
+in Phase 4b.
 
 ```elixir
-@spec sign(doc :: :xmerl.document() | binary(), opts :: keyword()) ::
-        {:ok, signed_doc :: :xmerl.document()} | {:error, term()}
-@spec verify(doc :: :xmerl.document() | binary(), opts :: keyword()) ::
+@spec sign(doc :: binary(), opts :: keyword()) ::
+        {:ok, signed_doc :: binary()} | {:error, term()}
+@spec verify(doc :: binary(), opts :: keyword()) ::
         {:ok, subject_id()} | {:error, term()}
 ```
 
-Profile target: XML-DSig (W3C) + XAdES B-B for v1.
+`sign/2` required opts: `:x5c` (leaf-first chain) plus PKCS#11
+keying opts (`:module`, `:slot_id`, `:pin`, `:key_label`, or
+canonical `:signer`). Optional: `:alg` (`:PS256` default,
+`:RS256`), `:signing_time`. Output is the original XML with an
+enveloped `<ds:Signature>` element spliced before the root's
+closing tag, carrying the XAdES `<xades:QualifyingProperties>`
+including `<xades:SigningCertificateV2>` (RFC 5035 IssuerSerialV2).
+
+Canonicalisation: **Exclusive XML Canonicalization 1.0** is
+mandatory and the only choice in v1. Digest method: SHA-256.
+Signature method URIs: `xmldsig-more#rsa-sha256` (RS256),
+`xmldsig-more#sha256-rsa-MGF1` (PS256, RFC 4051).
+
+`verify/2` runs in this order — every step is a refusal point:
+
+1. Locate the (single) `<ds:Signature>`. v1 refuses
+   `:multiple_signatures_unsupported_in_v1`.
+2. Extract `<ds:KeyInfo>` chain plus the XAdES context
+   (SignedInfo, SignatureValue, SignedProperties, CertDigest,
+   IssuerSerialV2).
+3. **Allowlist gate (architectural invariant).** Synthesise a
+   JOSE-style header from the chain and run the configured
+   `Pkcs11ex.Policy`. The chain is untrusted input until both
+   `resolve/2` and `validate/3` succeed.
+4. Verify XAdES `<SigningCertificateV2>` actually binds the leaf
+   from `<KeyInfo>`: `SHA-256(leaf_der) == <CertDigest>`,
+   `<IssuerSerialV2>` matches the leaf's issuer + serial.
+5. Recompute data `<Reference>` digest: enveloped-signature
+   transform (excise the `<Signature>` element) + exc-c14n +
+   SHA-256.
+6. Recompute SignedProperties `<Reference>` digest: exc-c14n
+   subtree + SHA-256.
+7. Math: `:public_key.verify` with the right padding for the
+   signature method URI.
+
+v1 limitations: enveloped signatures only (detached and
+enveloping XML-DSig modes are post-v1); the base document must
+not already contain a `<ds:Signature>` (multi-sig is post-v1).
 
 ### 3.5 `Pkcs11ex.Slot`
 
@@ -755,6 +793,13 @@ Configuration errors are **raised**, not returned: invalid configuration prevent
 | `{:writer, :existing_acroform_unsupported_in_v1}` | PDF    | Base PDF already carries `/AcroForm`; v1 won't merge.                          |
 | `{:writer, :placeholder_size_out_of_range}` | PDF          | `:placeholder_size` outside `[256, 1 MiB]`.                                    |
 | `{:writer, :cms_der_too_large}`         | PDF              | The CMS DER won't fit the prepared `/Contents` placeholder — caller must raise `:placeholder_size`. |
+| `{:malformed_xml, term}`                | XML              | `:xmerl_scan` failed to parse the input.                                       |
+| `:no_signature_element`                 | XML              | `Pkcs11ex.XML.verify/2` got an XML document with no `<ds:Signature>`.          |
+| `:digest_mismatch`                      | XML              | A `<ds:Reference>`'s recomputed digest differs from the embedded `<ds:DigestValue>`. Canonical tampered-byte signal. |
+| `:xades_cert_digest_mismatch`           | XML              | XAdES `<CertDigest>` does not match `SHA-256(leaf_der)` from `<KeyInfo>`.       |
+| `:xades_issuer_serial_mismatch`         | XML              | XAdES `<IssuerSerialV2>` does not match the leaf cert's issuer + serial.       |
+| `{:c14n, atom \| reason}`               | XML              | `xmerl_c14n` failed (e.g. `:unsupported_canonicalization`).                    |
+| `{:unsupported_signature_method, uri}`  | XML              | `<ds:SignatureMethod>` URI is not one we wired up (only RFC 4051 `rsa-sha256` and `sha256-rsa-MGF1` in v1). |
 | `:malformed_jws`                        | JWS              | Header not parseable, signature segment missing/extra.                         |
 | `:missing_required_header`              | JWS              | One of `alg`, `crit`, `x5c` is absent.                                         |
 | `:b64_crit_violation`                   | JWS              | `b64` is `false` but not in `crit`, or vice versa (RFC 7797 §6).               |

@@ -92,7 +92,16 @@ defmodule Pkcs11ex.XML do
   @spec sign(binary() | iodata(), keyword()) :: sign_result()
   def sign(doc, opts) when is_list(opts) do
     xml = IO.iodata_to_binary(doc)
+    start_meta = base_telemetry_meta(opts)
 
+    :telemetry.span([:pkcs11ex, :sign], start_meta, fn ->
+      result = sign_inner(xml, opts)
+      stop_meta = Map.merge(start_meta, sign_stop_meta(result))
+      {result, stop_meta}
+    end)
+  end
+
+  defp sign_inner(xml, opts) do
     with {:ok, alg} <- fetch_alg(opts),
          :ok <- check_alg_allowed(alg),
          {:ok, _adapter} <- Algorithm.lookup(alg),
@@ -186,7 +195,16 @@ defmodule Pkcs11ex.XML do
 
   def verify(doc, opts) when is_list(opts) do
     xml = IO.iodata_to_binary(doc)
+    start_meta = base_telemetry_meta(opts)
 
+    :telemetry.span([:pkcs11ex, :verify], start_meta, fn ->
+      result = verify_inner(xml, opts)
+      stop_meta = Map.merge(start_meta, verify_stop_meta(result, byte_size(xml)))
+      {result, stop_meta}
+    end)
+  end
+
+  defp verify_inner(xml, opts) do
     with {:ok, root} <- Canonicalizer.parse(xml),
          {:ok, sig_node} <- locate_signature(root),
          {:ok, ctx} <- collect_signature_context(sig_node),
@@ -324,6 +342,86 @@ defmodule Pkcs11ex.XML do
   defp configured_policy do
     Application.get_env(:pkcs11ex, :trust_policy, Pkcs11ex.Policy.PinnedRegistry)
   end
+
+  # ---------- telemetry helpers ----------
+
+  defp base_telemetry_meta(opts) do
+    %{
+      format: :xml,
+      alg: Keyword.get(opts, :alg, :PS256),
+      encoding_context: :der,
+      slot_ref: opts_slot_ref(opts),
+      key_ref: opts_key_ref(opts)
+    }
+  end
+
+  defp opts_slot_ref(opts) do
+    case Keyword.get(opts, :signer) do
+      {slot_ref, _key_ref} -> slot_ref
+      atom when is_atom(atom) and not is_nil(atom) -> atom
+      _ -> Keyword.get(opts, :slot_ref) || Keyword.get(opts, :slot_id)
+    end
+  end
+
+  defp opts_key_ref(opts) do
+    case Keyword.get(opts, :signer) do
+      {_slot_ref, key_ref} -> key_ref
+      _ -> Keyword.get(opts, :key_ref) || Keyword.get(opts, :key_label)
+    end
+  end
+
+  defp sign_stop_meta({:ok, signed_xml}) when is_binary(signed_xml),
+    do: %{byte_count: byte_size(signed_xml)}
+
+  defp sign_stop_meta({:error, reason}),
+    do: %{error_class: error_class(reason), error_reason: reason}
+
+  defp verify_stop_meta({:ok, subject_id}, byte_count),
+    do: %{subject_id: subject_id, byte_count: byte_count}
+
+  defp verify_stop_meta({:error, reason}, byte_count),
+    do: %{
+      byte_count: byte_count,
+      error_class: error_class(reason),
+      error_reason: reason
+    }
+
+  defp error_class({:c14n, _}), do: :xml
+  defp error_class({:malformed_xml, _}), do: :xml
+  defp error_class({:xml, _}), do: :xml
+  defp error_class({:missing_xades_opt, _}), do: :xml
+  defp error_class({:xades_missing_cert_digest, _}), do: :xml
+  defp error_class({:xades_missing_issuer_serial_v2, _}), do: :xml
+  defp error_class({:unsupported_signature_method, _}), do: :xml
+
+  defp error_class(reason)
+       when reason in [
+              :no_signature_element,
+              :multiple_signatures_unsupported_in_v1,
+              :digest_mismatch,
+              :xades_cert_digest_mismatch,
+              :xades_issuer_serial_mismatch,
+              :unsupported_canonicalization
+            ],
+       do: :xml
+
+  defp error_class(reason) when reason in [:missing_x5c, :invalid_x5c, :disallowed_alg], do: :jws
+
+  defp error_class(reason)
+       when reason in [
+              :unknown_signer,
+              :hint_mismatch,
+              :untrusted_signer,
+              :cert_expired,
+              :cert_not_yet_valid,
+              :chain_invalid,
+              :incomplete_chain
+            ],
+       do: :trust_policy
+
+  defp error_class(:signature_invalid), do: :crypto
+  defp error_class({:unsupported_signature_algorithm, _}), do: :crypto
+  defp error_class(_), do: :unknown
 
   defp check_xades_cert_binding(ctx, %X509{der: leaf_der}) do
     expected_digest = :crypto.hash(:sha256, leaf_der)

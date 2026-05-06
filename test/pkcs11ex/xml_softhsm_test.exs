@@ -156,6 +156,27 @@ defmodule Pkcs11ex.XMLSofthsmTest do
       assert {:ok, :anyone} = XML.verify(ctx.signed_xml)
     end
 
+    test "verify success populates :subject_id in [:pkcs11ex, :verify, :stop] metadata",
+         ctx do
+      pid = self()
+      handler_id = "xml-verify-subject-#{System.unique_integer([:positive])}"
+
+      :telemetry.attach(
+        handler_id,
+        [:pkcs11ex, :verify, :stop],
+        fn _e, _m, meta, _ -> send(pid, {:verify_stop_meta, meta}) end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+
+      assert {:ok, :anyone} = XML.verify(ctx.signed_xml)
+      assert_received {:verify_stop_meta, meta}
+      assert meta.subject_id == :anyone
+      assert meta.byte_count == byte_size(ctx.signed_xml)
+      refute Map.has_key?(meta, :error_class)
+    end
+
     test "tampered byte inside the signed range surfaces :digest_mismatch", ctx do
       pdf = ctx.signed_xml
       # The MntTotal value sits in the data range. Flipping a digit
