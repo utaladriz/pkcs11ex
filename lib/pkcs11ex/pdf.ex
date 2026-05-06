@@ -475,6 +475,7 @@ defmodule Pkcs11ex.PDF do
   # callers pivot dashboards on it.
   defp error_class({:malformed_pdf, _}), do: :pdf
   defp error_class({:writer, _}), do: :pdf
+  defp error_class({:bt_failed, _}), do: :pdf
   defp error_class({:cms_codec, _, _}), do: :cms
   defp error_class({:not_signed_data, _}), do: :cms
   defp error_class({:multi_value_attribute, _}), do: :cms

@@ -448,6 +448,7 @@ defmodule Pkcs11ex.XML do
 
   defp error_class({:c14n, _}), do: :xml
   defp error_class({:malformed_xml, _}), do: :xml
+  defp error_class({:bt_failed, _}), do: :xml
   defp error_class({:xml, _}), do: :xml
   defp error_class({:missing_xades_opt, _}), do: :xml
   defp error_class({:xades_missing_cert_digest, _}), do: :xml
