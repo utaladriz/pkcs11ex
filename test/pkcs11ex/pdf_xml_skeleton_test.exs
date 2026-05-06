@@ -27,12 +27,14 @@ defmodule Pkcs11ex.PDFXMLSkeletonTest do
   end
 
   describe "Pkcs11ex.XML" do
-    test "sign/2 returns :not_implemented_in_v1" do
-      assert {:error, :not_implemented_in_v1} =
-               Pkcs11ex.XML.sign("<doc/>", signer: :foo, alg: :PS256)
+    # `sign/2` runs the pipeline now (Phase 4b.1.5). Skeleton contract
+    # has moved to the XML unit + :softhsm tests; here we just pin
+    # the surface error class for callers that omit `:x5c`.
+    test "sign/2 surfaces :missing_x5c when the chain isn't supplied" do
+      assert {:error, :missing_x5c} = Pkcs11ex.XML.sign("<doc/>", alg: :PS256)
     end
 
-    test "verify/2 returns :not_implemented_in_v1" do
+    test "verify/2 returns :not_implemented_in_v1 (lands in step 4b.1.6)" do
       assert {:error, :not_implemented_in_v1} = Pkcs11ex.XML.verify("<doc/>")
     end
   end

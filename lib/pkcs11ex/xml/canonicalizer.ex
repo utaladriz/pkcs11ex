@@ -88,6 +88,57 @@ defmodule Pkcs11ex.XML.Canonicalizer do
   defp validate_method(:exclusive_c14n_10), do: :ok
   defp validate_method(_), do: {:error, {:c14n, :unsupported_canonicalization}}
 
+  @doc """
+  Canonicalises a sub-tree extracted from a host document where the
+  parent's default namespace would be inherited but is **not visibly
+  used** anywhere inside the sub-tree.
+
+  Why this is needed: exclusive C14N's W3C-spec behaviour drops
+  inherited default namespaces unless an element name in the
+  sub-tree is unprefixed (i.e., actually lives in the inherited
+  default namespace). Our vendored `xmerl_c14n` over-emits the
+  inherited default — it preserves it whenever it differs from the
+  outer parent — so `<ds:SignedInfo>` extracted from a SII-DTE
+  document picks up `xmlns="http://www.sii.cl/SiiDte"` even though
+  none of its descendants use that namespace.
+
+  This helper clears the parsed element's
+  `:xmlNamespace.default` field before delegating to
+  `canonicalize/2`, producing the canonical bytes a correct
+  exclusive-C14N implementation (`xmlsec1`, BouncyCastle) would
+  emit.
+
+  **Caveat:** only safe when every element in the sub-tree uses an
+  explicit namespace prefix (`ds:`, `xades:`, etc.). If any element
+  name is unprefixed, the default namespace IS visibly used and
+  must be preserved — use `canonicalize/2` in that case.
+
+  Used by both `Pkcs11ex.XML.sign/2` (for the
+  `<xades:SignedProperties>` digest) and `Pkcs11ex.XML.verify/2`
+  (for re-extracting `<ds:SignedInfo>` and
+  `<xades:SignedProperties>` from the host document).
+  """
+  @spec canonicalize_subtree(xmerl_node(), keyword()) :: {:ok, binary()} | {:error, term()}
+  def canonicalize_subtree(node, opts \\ []) do
+    canonicalize(clear_inherited_default(node), opts)
+  end
+
+  defp clear_inherited_default({:xmlElement, _, _, _, ns, _, _, _, content, _, _, _} = elem) do
+    cleared_ns =
+      case ns do
+        {:xmlNamespace, _default, nodes} -> {:xmlNamespace, [], nodes}
+        other -> other
+      end
+
+    cleared_content = Enum.map(content, &clear_inherited_default/1)
+
+    elem
+    |> put_elem(4, cleared_ns)
+    |> put_elem(8, cleared_content)
+  end
+
+  defp clear_inherited_default(other), do: other
+
   defp inclusive_namespaces_charlists(list) when is_list(list) do
     Enum.map(list, fn
       bin when is_binary(bin) -> String.to_charlist(bin)
