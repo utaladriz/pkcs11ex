@@ -21,8 +21,8 @@ defmodule Pkcs11ex.PDFXMLSkeletonTest do
                Pkcs11ex.PDF.sign("dummy pdf", alg: :PS256)
     end
 
-    test "verify/2 returns :not_implemented_in_v1 (lands in step 9)" do
-      assert {:error, :not_implemented_in_v1} = Pkcs11ex.PDF.verify("dummy pdf")
+    test "verify/2 surfaces :no_signature when there is no /Sig dict" do
+      assert {:error, :no_signature} = Pkcs11ex.PDF.verify("dummy pdf")
     end
   end
 

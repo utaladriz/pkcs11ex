@@ -50,6 +50,7 @@ defmodule Pkcs11ex.PDFSofthsmTest do
       true ->
         {:ok, ctx} = bootstrap(driver, softhsm2_util)
         Application.put_env(:pkcs11ex, :allowed_algs, [:PS256])
+        Application.put_env(:pkcs11ex, :trust_policy, Pkcs11ex.Policy.Allow)
         {:ok, ctx}
     end
   end
@@ -163,6 +164,74 @@ defmodule Pkcs11ex.PDFSofthsmTest do
              )
   end
 
+  describe "verify/2 round-trip" do
+    setup ctx do
+      base_pdf = build_minimal_pdf()
+
+      {:ok, signed_pdf} =
+        PDF.sign(base_pdf,
+          module: ctx.pkcs11_module,
+          slot_id: ctx.slot_id,
+          pin: ctx.pin,
+          key_label: ctx.key_label,
+          alg: :PS256,
+          x5c: ctx.leaf_der,
+          placeholder_size: 4096
+        )
+
+      Map.put(ctx, :signed_pdf, signed_pdf)
+    end
+
+    test "happy path — Allow policy lets the signed PDF through", ctx do
+      assert {:ok, :anyone} = PDF.verify(ctx.signed_pdf)
+    end
+
+    test "tampered byte inside the signed range surfaces :message_digest_mismatch", ctx do
+      # Catalog object body sits well before the /Sig dict, inside the
+      # signed range. Flipping a single byte there must invalidate the
+      # CMS messageDigest before any signature math runs.
+      pdf = ctx.signed_pdf
+      [pos, _len] = Tuple.to_list(:binary.match(pdf, "%PDF-1.7"))
+      tampered = replace_byte(pdf, pos, ?X)
+
+      assert {:error, :message_digest_mismatch} = PDF.verify(tampered)
+    end
+
+    test "tampered byte inside the hex placeholder surfaces :signature_invalid (or codec error)", ctx do
+      # Flip a byte inside the /Contents hex region. /ByteRange excludes
+      # this region, so messageDigest still matches; the CMS itself
+      # changes, which either fails to parse or fails the signature math.
+      pdf = ctx.signed_pdf
+      contents_pos = pdf |> :binary.match("/Contents <") |> elem(0) |> Kernel.+(byte_size("/Contents <"))
+      # Flip the first hex digit from '0' to 'F'
+      tampered = replace_byte(pdf, contents_pos, ?F)
+
+      result = PDF.verify(tampered)
+
+      assert match?({:error, :signature_invalid}, result) or
+               match?({:error, {:cms_codec, _, _}}, result)
+    end
+
+    test "PDF without any /Sig dict surfaces :no_signature" do
+      base_pdf = build_minimal_pdf()
+      assert {:error, :no_signature} = PDF.verify(base_pdf)
+    end
+
+    test "PDF with two /Sig dicts surfaces :multiple_signatures_unsupported_in_v1", ctx do
+      forged = ctx.signed_pdf <> "\n%fake-sig\n/ByteRange [0 1 2 3]\n/Contents <00>\n"
+      assert {:error, :multiple_signatures_unsupported_in_v1} = PDF.verify(forged)
+    end
+
+    test "policy refusal short-circuits before any signature math", ctx do
+      # Swap the Allow policy for one that refuses everything; verify
+      # must return :unknown_signer without crunching the signature.
+      Application.put_env(:pkcs11ex, :trust_policy, Pkcs11ex.PDFSofthsmTest.RefusingPolicy)
+      on_exit(fn -> Application.put_env(:pkcs11ex, :trust_policy, Pkcs11ex.Policy.Allow) end)
+
+      assert {:error, :unknown_signer} = PDF.verify(ctx.signed_pdf)
+    end
+  end
+
   test "errors when /Sig DER would overflow the placeholder", ctx do
     base_pdf = build_minimal_pdf()
 
@@ -181,6 +250,20 @@ defmodule Pkcs11ex.PDFSofthsmTest do
   end
 
   # ---------- helpers ----------
+
+  defmodule RefusingPolicy do
+    @moduledoc false
+    @behaviour Pkcs11ex.Policy
+    @impl true
+    def resolve(_header, _opts), do: {:error, :unknown_signer}
+    @impl true
+    def validate(_cert, _chain, _opts), do: {:error, :unknown_signer}
+  end
+
+  defp replace_byte(bin, pos, byte) do
+    <<prefix::binary-size(pos), _::binary-size(1), rest::binary>> = bin
+    <<prefix::binary, byte, rest::binary>>
+  end
 
   defp extract_signature_artifacts(pdf) do
     [_, a, b, c, d] = Regex.run(~r/\/ByteRange \[(\d+) (\d+) (\d+) (\d+)\]/, pdf, capture: :all)
