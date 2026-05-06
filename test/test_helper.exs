@@ -93,6 +93,27 @@ defmodule Pkcs11ex.Test.SoftHSM do
   end
 end
 
+defmodule Pkcs11ex.Test.Conformance do
+  @moduledoc """
+  Detection helpers for external standards-conformance tools used by
+  the `:conformance`-tagged test suite. Each tool is tried via
+  `System.find_executable/1`; the test setup skips with a friendly
+  install hint when missing.
+
+  Tools currently used:
+
+    * `pdfsig` (Poppler) — `brew install poppler`
+    * `xmlsec1` (libxmlsec1) — `brew install libxmlsec1`
+
+  Tests that need these tools should also `@moduletag :conformance`
+  so they're auto-excluded by default. `mix test --include
+  conformance` opts in.
+  """
+
+  def pdfsig_path, do: System.find_executable("pdfsig")
+  def xmlsec1_path, do: System.find_executable("xmlsec1")
+end
+
 excludes =
   if Pkcs11ex.Test.SoftHSM.available?() do
     []
@@ -104,5 +125,22 @@ excludes =
 
     [softhsm: true]
   end
+
+# `:conformance` is opt-in (`mix test --include conformance`). Hits real
+# external verifiers (pdfsig, xmlsec1) and SoftHSM together — slow and
+# system-dependent.
+excludes = [conformance: true] ++ excludes
+
+# Tool availability is detected at compile time inside each conformance
+# test module — missing tools cause the test bodies to compile out
+# entirely, replaced by a single "skipped" placeholder.
+
+unless Pkcs11ex.Test.Conformance.pdfsig_path() do
+  IO.puts("[pkcs11ex] pdfsig not on PATH; conformance/PDF tests will skip.")
+end
+
+unless Pkcs11ex.Test.Conformance.xmlsec1_path() do
+  IO.puts("[pkcs11ex] xmlsec1 not on PATH; conformance/XML tests will skip.")
+end
 
 ExUnit.start(exclude: excludes)
