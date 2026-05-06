@@ -136,17 +136,91 @@ defmodule Pkcs11ex.CMS.SignedData do
   #
   # For PKCS#1 v1.5 the signed-with-RSA family historically requires an
   # explicit DER NULL (`<<5, 0>>`) per RFC 8017 §A.2.4 — many strict
-  # verifiers reject absent parameters here. For RSASSA-PSS we omit
-  # parameters and verifiers default to SHA-256 / MGF1-SHA-256 /
-  # sLen=hLen / trailerField=1; the explicit `RSASSA-PSS-params` struct
-  # is a Phase 5 hardening item.
+  # verifiers reject absent parameters here.
+  #
+  # For RSASSA-PSS we encode the explicit `RSASSA-PSS-params` per RFC
+  # 8017 Appendix A.2.3. The "PS256" JOSE convention (and what our
+  # `Pkcs11ex.Algorithm.PS256` adapter requests from PKCS#11) is:
+  # SHA-256 / MGF1-SHA-256 / sLen=32 / trailerField=1. We hard-code
+  # the canonical DER for these parameters because OTP's
+  # `:CryptographicMessageSyntax-2009` codec does not expose a
+  # `RSASSA-PSS-params` ASN.1 type, and BouncyCastle / OpenSSL CMS
+  # parsers reject `:rsa_pss` SignerInfos that omit the parameters.
   @der_null <<5, 0>>
+
+  # SEQUENCE {
+  #   [0] HashAlgorithm     { sha256-OID, NULL }
+  #   [1] MaskGenAlgorithm  { mgf1-OID, SEQUENCE { sha256-OID, NULL } }
+  #   [2] saltLength        INTEGER 32
+  #   -- trailerField defaults to 1 and is omitted
+  # }
+  @pss_params_sha256_salt32 <<
+    0x30,
+    0x34,
+    0xA0,
+    0x0F,
+    0x30,
+    0x0D,
+    0x06,
+    0x09,
+    0x60,
+    0x86,
+    0x48,
+    0x01,
+    0x65,
+    0x03,
+    0x04,
+    0x02,
+    0x01,
+    0x05,
+    0x00,
+    0xA1,
+    0x1C,
+    0x30,
+    0x1A,
+    0x06,
+    0x09,
+    0x2A,
+    0x86,
+    0x48,
+    0x86,
+    0xF7,
+    0x0D,
+    0x01,
+    0x01,
+    0x08,
+    0x30,
+    0x0D,
+    0x06,
+    0x09,
+    0x60,
+    0x86,
+    0x48,
+    0x01,
+    0x65,
+    0x03,
+    0x04,
+    0x02,
+    0x01,
+    0x05,
+    0x00,
+    0xA2,
+    0x03,
+    0x02,
+    0x01,
+    0x20
+  >>
 
   defp resolve_signature_algorithm(opts) do
     case Keyword.get(opts, :signature_algorithm, :rsa_sha256) do
-      :rsa_sha256 -> {:ok, OIDs.id_sha256_with_rsa(), {:asn1_OPENTYPE, @der_null}}
-      :rsa_pss_sha256 -> {:ok, OIDs.id_rsassa_pss(), :asn1_NOVALUE}
-      other -> {:error, {:unsupported_signature_algorithm, other}}
+      :rsa_sha256 ->
+        {:ok, OIDs.id_sha256_with_rsa(), {:asn1_OPENTYPE, @der_null}}
+
+      :rsa_pss_sha256 ->
+        {:ok, OIDs.id_rsassa_pss(), {:asn1_OPENTYPE, @pss_params_sha256_salt32}}
+
+      other ->
+        {:error, {:unsupported_signature_algorithm, other}}
     end
   end
 
@@ -180,8 +254,7 @@ defmodule Pkcs11ex.CMS.SignedData do
 
     sd =
       {:SignedData, 1, [{:DigestAlgorithmIdentifier, digest_oid, :asn1_NOVALUE}],
-       {:EncapsulatedContentInfo, content_oid, :asn1_NOVALUE}, cert_choices, :asn1_NOVALUE,
-       [signer_info]}
+       {:EncapsulatedContentInfo, content_oid, :asn1_NOVALUE}, cert_choices, :asn1_NOVALUE, [signer_info]}
 
     {:ok, sd}
   end
@@ -328,8 +401,7 @@ defmodule Pkcs11ex.CMS.SignedData do
 
   defp parse_utc_time(charlist) do
     case List.to_string(charlist) do
-      <<yy::binary-2, mm::binary-2, dd::binary-2, hh::binary-2, mi::binary-2, ss::binary-2,
-        "Z">> ->
+      <<yy::binary-2, mm::binary-2, dd::binary-2, hh::binary-2, mi::binary-2, ss::binary-2, "Z">> ->
         # RFC 5280 §4.1.2.5.1: YY < 50 → 20YY, else 19YY.
         full_year = 2000 + String.to_integer(yy)
 
@@ -349,8 +421,7 @@ defmodule Pkcs11ex.CMS.SignedData do
 
   defp parse_generalized_time(charlist) do
     case List.to_string(charlist) do
-      <<yyyy::binary-4, mm::binary-2, dd::binary-2, hh::binary-2, mi::binary-2, ss::binary-2,
-        "Z">> ->
+      <<yyyy::binary-4, mm::binary-2, dd::binary-2, hh::binary-2, mi::binary-2, ss::binary-2, "Z">> ->
         build_datetime(String.to_integer(yyyy), mm, dd, hh, mi, ss)
 
       _ ->
