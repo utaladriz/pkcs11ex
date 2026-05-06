@@ -32,3 +32,6 @@ pkcs11ex-*.tar
 /.env
 /.env.*
 config/*.local.exs
+
+# Demo artifact produced by examples/safenet-etoken/demo.exs
+/signed_demo.pdf
