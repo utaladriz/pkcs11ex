@@ -85,6 +85,16 @@ defmodule Pkcs11ex.PDF do
   """
   @spec sign(binary(), keyword()) :: sign_result()
   def sign(pdf_bytes, opts) when is_binary(pdf_bytes) and is_list(opts) do
+    start_meta = base_telemetry_meta(:pdf, opts)
+
+    :telemetry.span([:pkcs11ex, :sign], start_meta, fn ->
+      result = sign_inner(pdf_bytes, opts)
+      stop_meta = Map.merge(start_meta, sign_stop_meta(result))
+      {result, stop_meta}
+    end)
+  end
+
+  defp sign_inner(pdf_bytes, opts) do
     with {:ok, alg} <- fetch_alg(opts),
          :ok <- check_alg_allowed(alg),
          {:ok, _adapter} <- Algorithm.lookup(alg),
@@ -139,6 +149,16 @@ defmodule Pkcs11ex.PDF do
   def verify(pdf_bytes, opts \\ [])
 
   def verify(pdf_bytes, opts) when is_binary(pdf_bytes) and is_list(opts) do
+    start_meta = base_telemetry_meta(:pdf, opts)
+
+    :telemetry.span([:pkcs11ex, :verify], start_meta, fn ->
+      result = verify_inner(pdf_bytes, opts)
+      stop_meta = Map.merge(start_meta, verify_stop_meta(result, byte_size(pdf_bytes)))
+      {result, stop_meta}
+    end)
+  end
+
+  defp verify_inner(pdf_bytes, opts) do
     with {:ok, byte_range, cms_der} <- locate_signature(pdf_bytes),
          :ok <- check_no_unsigned_trailing_bytes(pdf_bytes, byte_range),
          {:ok, parsed} <- SignedData.parse(cms_der),
@@ -361,4 +381,91 @@ defmodule Pkcs11ex.PDF do
   defp configured_policy do
     Application.get_env(:pkcs11ex, :trust_policy, Pkcs11ex.Policy.PinnedRegistry)
   end
+
+  # ---------- telemetry helpers ----------
+
+  # Common metadata shape, populated at span start and re-merged at
+  # stop. Keeps `:slot_ref`, `:key_ref`, `:alg`, `:format`, and
+  # `:encoding_context` in line with the contract documented in
+  # `docs/specs/api.md` §4.2.
+  defp base_telemetry_meta(format, opts) do
+    %{
+      format: format,
+      alg: Keyword.get(opts, :alg, :PS256),
+      encoding_context: :der,
+      slot_ref: opts_slot_ref(opts),
+      key_ref: opts_key_ref(opts)
+    }
+  end
+
+  defp opts_slot_ref(opts) do
+    case Keyword.get(opts, :signer) do
+      {slot_ref, _key_ref} -> slot_ref
+      atom when is_atom(atom) and not is_nil(atom) -> atom
+      _ -> Keyword.get(opts, :slot_ref) || Keyword.get(opts, :slot_id)
+    end
+  end
+
+  defp opts_key_ref(opts) do
+    case Keyword.get(opts, :signer) do
+      {_slot_ref, key_ref} -> key_ref
+      _ -> Keyword.get(opts, :key_ref) || Keyword.get(opts, :key_label)
+    end
+  end
+
+  defp sign_stop_meta({:ok, signed_pdf}) when is_binary(signed_pdf),
+    do: %{byte_count: byte_size(signed_pdf)}
+
+  defp sign_stop_meta({:error, reason}),
+    do: %{error_class: error_class(reason), error_reason: reason}
+
+  defp verify_stop_meta({:ok, subject_id}, byte_count),
+    do: %{subject_id: subject_id, byte_count: byte_count}
+
+  defp verify_stop_meta({:error, reason}, byte_count),
+    do: %{
+      byte_count: byte_count,
+      error_class: error_class(reason),
+      error_reason: reason
+    }
+
+  # Map an error tuple onto the error_class taxonomy in api.md §4.1.
+  # The class atom is the one named in the table's "Class" column —
+  # callers pivot dashboards on it.
+  defp error_class({:malformed_pdf, _}), do: :pdf
+  defp error_class({:writer, _}), do: :pdf
+  defp error_class({:cms_codec, _, _}), do: :cms
+  defp error_class({:not_signed_data, _}), do: :cms
+  defp error_class({:multi_value_attribute, _}), do: :cms
+  defp error_class({:missing_attribute, _}), do: :cms
+  defp error_class({:unsupported_signature_algorithm, _}), do: :cms
+  defp error_class({:unsupported_digest_algorithm, _}), do: :cms
+
+  defp error_class(reason)
+       when reason in [
+              :no_signature,
+              :multiple_signatures_unsupported_in_v1,
+              :malformed_signature_contents,
+              :byte_range_out_of_bounds,
+              :message_digest_mismatch,
+              :incremental_update_after_signature
+            ],
+       do: :pdf
+
+  defp error_class(reason) when reason in [:missing_x5c, :invalid_x5c, :disallowed_alg], do: :jws
+
+  defp error_class(reason)
+       when reason in [
+              :unknown_signer,
+              :hint_mismatch,
+              :untrusted_signer,
+              :cert_expired,
+              :cert_not_yet_valid,
+              :chain_invalid,
+              :incomplete_chain
+            ],
+       do: :trust_policy
+
+  defp error_class(:signature_invalid), do: :crypto
+  defp error_class(_), do: :unknown
 end

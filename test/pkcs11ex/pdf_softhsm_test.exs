@@ -186,6 +186,27 @@ defmodule Pkcs11ex.PDFSofthsmTest do
       assert {:ok, :anyone} = PDF.verify(ctx.signed_pdf)
     end
 
+    test "verify success populates :subject_id in [:pkcs11ex, :verify, :stop] metadata",
+         ctx do
+      pid = self()
+      handler_id = "pdf-verify-subject-#{System.unique_integer([:positive])}"
+
+      :telemetry.attach(
+        handler_id,
+        [:pkcs11ex, :verify, :stop],
+        fn _evt, _msr, meta, _ -> send(pid, {:verify_stop_meta, meta}) end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+
+      assert {:ok, :anyone} = PDF.verify(ctx.signed_pdf)
+      assert_received {:verify_stop_meta, meta}
+      assert meta.subject_id == :anyone
+      assert meta.byte_count == byte_size(ctx.signed_pdf)
+      refute Map.has_key?(meta, :error_class)
+    end
+
     test "tampered byte inside the signed range surfaces :message_digest_mismatch", ctx do
       # Catalog object body sits well before the /Sig dict, inside the
       # signed range. Flipping a single byte there must invalidate the
