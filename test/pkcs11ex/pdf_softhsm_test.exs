@@ -230,6 +230,37 @@ defmodule Pkcs11ex.PDFSofthsmTest do
 
       assert {:error, :unknown_signer} = PDF.verify(ctx.signed_pdf)
     end
+
+    test "any byte appended after the signed revision is detected", ctx do
+      # The canonical "append-attack": take a validly signed PDF and
+      # tack additional bytes on the end. /ByteRange's signed length
+      # is frozen at sign time, so c+d < byte_size after any append.
+      tampered = ctx.signed_pdf <> "X"
+      assert {:error, :incremental_update_after_signature} = PDF.verify(tampered)
+    end
+
+    test "even a single trailing null byte is detected", ctx do
+      tampered = ctx.signed_pdf <> <<0x00>>
+      assert {:error, :incremental_update_after_signature} = PDF.verify(tampered)
+    end
+
+    test "a forged incremental update appended after the signature is detected", ctx do
+      forged_update = "\n4 0 obj\n<< /Forged true >>\nendobj\n"
+      tampered = ctx.signed_pdf <> forged_update
+      assert {:error, :incremental_update_after_signature} = PDF.verify(tampered)
+    end
+
+    test "append-attack is detected before the policy gate runs (fail-fast)", ctx do
+      # The check_no_unsigned_trailing_bytes step runs before the
+      # policy gate, so even an appended PDF whose chain would fail
+      # the policy gets flagged with the more specific
+      # :incremental_update_after_signature error.
+      Application.put_env(:pkcs11ex, :trust_policy, Pkcs11ex.PDFSofthsmTest.RefusingPolicy)
+      on_exit(fn -> Application.put_env(:pkcs11ex, :trust_policy, Pkcs11ex.Policy.Allow) end)
+
+      tampered = ctx.signed_pdf <> "X"
+      assert {:error, :incremental_update_after_signature} = PDF.verify(tampered)
+    end
   end
 
   test "errors when /Sig DER would overflow the placeholder", ctx do

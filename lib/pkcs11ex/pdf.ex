@@ -106,34 +106,41 @@ defmodule Pkcs11ex.PDF do
     1. Locate the (single) `/Sig` dict in the file: extract
        `/ByteRange [a b c d]` and `/Contents <hex>`. v1 refuses PDFs
        carrying more than one `/Sig` (multi-signature is post-v1).
-    2. Strip the trailing zero-padding from the hex-decoded
+    2. **Append-attack detection.** Refuse if `c + d` does not equal
+       the file's total byte length — bytes beyond the signed range
+       can carry an attacker-crafted incremental update that the
+       original signature cannot cover by definition. Surfaces as
+       `:incremental_update_after_signature`.
+    3. Strip the trailing zero-padding from the hex-decoded
        `/Contents` blob using the CMS SEQUENCE length prefix; parse
        the result via `Pkcs11ex.CMS.SignedData.parse/1`.
-    3. **Allowlist gate (architectural invariant).** Synthesise a
+    4. **Allowlist gate (architectural invariant).** Synthesise a
        JOSE-style header from the embedded `x5c` chain and run it
        through the configured `Pkcs11ex.Policy` —
        `policy.resolve/2` then `policy.validate/3`. The candidate
        chain is **untrusted input** until both succeed. No
        cryptographic check has happened yet.
-    4. Reconstruct `signed_input` = `pdf[a..a+b) ++ pdf[c..c+d)`,
+    5. Reconstruct `signed_input` = `pdf[a..a+b) ++ pdf[c..c+d)`,
        hash with SHA-256, compare against the CMS `messageDigest`
        PKCS#9 attribute. A mismatch surfaces as
        `:message_digest_mismatch` and is the canonical
        tampered-byte signal — any modification inside the signed
        byte range invalidates the digest before the math runs.
-    5. Mathematically verify the embedded raw signature over the
+    6. Mathematically verify the embedded raw signature over the
        DER-encoded `signedAttrs` against the leaf's SPKI. Failure is
        `:signature_invalid`.
 
-  Failures from step 3 short-circuit before any signature math, so
+  Failures from step 4 short-circuit before any signature math, so
   callers cannot use `verify/2` as a CPU-bound oracle on attacker-
-  supplied certificates.
+  supplied certificates. Failures from step 2 short-circuit even
+  earlier, so an append-attack PDF is refused before any CMS work.
   """
   @spec verify(binary(), keyword()) :: verify_result()
   def verify(pdf_bytes, opts \\ [])
 
   def verify(pdf_bytes, opts) when is_binary(pdf_bytes) and is_list(opts) do
     with {:ok, byte_range, cms_der} <- locate_signature(pdf_bytes),
+         :ok <- check_no_unsigned_trailing_bytes(pdf_bytes, byte_range),
          {:ok, parsed} <- SignedData.parse(cms_der),
          {:ok, header} <- header_from_chain(parsed.certificates),
          policy = Keyword.get(opts, :trust_policy, configured_policy()),
@@ -288,6 +295,21 @@ defmodule Pkcs11ex.PDF do
      %{
        "x5c" => Enum.map(certs, fn %X509{der: der} -> Base.encode64(der) end)
      }}
+  end
+
+  # PAdES /ByteRange must cover everything except the hex placeholder.
+  # If `c + d < byte_size(pdf)`, additional bytes were appended after
+  # the signed revision — the canonical "incremental update after
+  # signature" attack. We refuse before anything else looks at the
+  # CMS payload, since the appended bytes can carry an attacker-
+  # crafted incremental update that the original signature cannot
+  # cover by definition.
+  defp check_no_unsigned_trailing_bytes(pdf, [_a, _b, c, d]) do
+    if c + d == byte_size(pdf) do
+      :ok
+    else
+      {:error, :incremental_update_after_signature}
+    end
   end
 
   defp check_message_digest(_pdf, _byte_range, nil),
