@@ -93,6 +93,78 @@ defmodule Pkcs11ex.Test.SoftHSM do
   end
 end
 
+defmodule Pkcs11ex.Test.SafeNet do
+  @moduledoc """
+  Detection helper for `:safenet`-tagged tests against a real
+  SafeNet eToken (5110 / 5300 / Authentication Client family).
+
+  ## Configuration
+
+    * `PKCS11EX_SAFENET_LIB` — driver path. Defaults to the macOS
+      eToken.framework location:
+      `/Library/Frameworks/eToken.framework/Versions/A/libeToken.dylib`
+    * `PKCS11EX_SAFENET_SLOT` — explicit slot id. If unset, the
+      helper auto-discovers the first slot with a token present.
+    * `PKCS11EX_SAFENET_PIN` — user PIN for sign-tests. Tests that
+      need it skip when missing — important because SafeNet locks
+      after 5 wrong PIN attempts.
+    * `PKCS11EX_SAFENET_KEY_LABEL` — `CKA_LABEL` of the signing
+      key on the token.
+
+  ## Why opt-in only
+
+  Unlike SoftHSM which we can safely re-init at will, real eTokens
+  have a strict PIN-attempt counter. An accidental wrong PIN in CI
+  could lock production hardware. So `:safenet` is excluded by
+  default and never auto-enabled by tool-presence detection.
+  """
+
+  @default_driver "/Library/Frameworks/eToken.framework/Versions/A/libeToken.dylib"
+
+  def driver_path, do: System.get_env("PKCS11EX_SAFENET_LIB") || @default_driver
+
+  def driver_present?, do: File.regular?(driver_path())
+
+  @doc """
+  Loads the driver and returns `{:ok, slot_info}` for the first
+  slot reporting `token_present: true`. Honours
+  `PKCS11EX_SAFENET_SLOT` if set (returns that slot regardless of
+  token-presence reporting — useful for slot-list discrepancies).
+  """
+  def detect_slot do
+    case System.get_env("PKCS11EX_SAFENET_SLOT") do
+      nil ->
+        with {:ok, mod} <- load_module(),
+             {:ok, slots} <- Pkcs11ex.Native.list_slots(mod) do
+          case Enum.find(slots, & &1.token_present) do
+            nil -> {:error, :no_token_present}
+            slot -> {:ok, slot}
+          end
+        end
+
+      slot_str ->
+        case Integer.parse(slot_str) do
+          {slot_id, ""} ->
+            {:ok, %Pkcs11ex.Native.SlotInfo{slot_id: slot_id, token_present: true}}
+
+          _ ->
+            {:error, {:bad_slot_env, slot_str}}
+        end
+    end
+  end
+
+  def load_module do
+    if driver_present?() do
+      case Pkcs11ex.Native.module_load(driver_path()) do
+        {:ok, mod} -> {:ok, mod}
+        {:error, _} = err -> err
+      end
+    else
+      {:error, {:driver_not_found, driver_path()}}
+    end
+  end
+end
+
 defmodule Pkcs11ex.Test.Conformance do
   @moduledoc """
   Detection helpers for external standards-conformance tools used by
@@ -130,6 +202,11 @@ excludes =
 # external verifiers (pdfsig, xmlsec1) and SoftHSM together — slow and
 # system-dependent.
 excludes = [conformance: true] ++ excludes
+
+# `:safenet` is opt-in (`mix test --include safenet`). Hits a real
+# SafeNet eToken — never auto-enable, since wrong PINs can lock
+# the hardware after a small number of attempts.
+excludes = [safenet: true] ++ excludes
 
 # Tool availability is detected at compile time inside each conformance
 # test module — missing tools cause the test bodies to compile out
