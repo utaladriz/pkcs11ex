@@ -196,8 +196,11 @@ defmodule Mix.Tasks.Pkcs11ex.ImportP12 do
         {:ok, output}
 
       {output, _} ->
+        # OpenSSL's wording for "wrong P12 password" varies across
+        # versions: "mac verify failure" (1.0.x), "Mac verify error"
+        # (3.x). Match a case-insensitive prefix that catches both.
         cond do
-          String.contains?(output, "mac verify failure") ->
+          output =~ ~r/mac verify (failure|error)/i ->
             {:error, "PKCS#12 password incorrect"}
 
           true ->
