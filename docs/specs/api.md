@@ -730,6 +730,24 @@ Configuration errors are **raised**, not returned: invalid configuration prevent
 | `:b64_crit_violation`                   | JWS              | `b64` is `false` but not in `crit`, or vice versa (RFC 7797 §6).               |
 | `:disallowed_alg`                       | JWS              | Header `alg` not in the effective allowlist.                                   |
 | `:unsupported_alg`                      | JWS              | Header `alg` is not registered in `:algorithms`.                               |
+| `{:cms_codec, type, reason}`            | CMS              | OTP ASN.1 codec rejected an encode/decode for `type` (e.g. `:ContentInfo`, `:SignerInfo`, `:SignedAttributes`). Treat as malformed input. |
+| `:missing_digest`                       | CMS              | `Pkcs11ex.CMS.SignedAttributes.build/1` called without `:digest`.              |
+| `:invalid_digest`                       | CMS              | `:digest` was not a binary (e.g. iolist, charlist).                            |
+| `:empty_certificate_chain`              | CMS              | `Pkcs11ex.CMS.SignedData.build/3` called with `certificates: []`.              |
+| `{:unsupported_digest_algorithm, atom}` | CMS              | Only `:sha256` is wired in v1.                                                 |
+| `{:unsupported_signature_algorithm, atom}` | CMS           | Only `:rsa_sha256` and `:rsa_pss_sha256` are wired in v1.                      |
+| `:invalid_leaf_certificate`             | CMS              | First entry of `:certificates` was not parseable as X.509.                     |
+| `:invalid_certificate_entry`            | CMS              | A non-leaf chain entry was not a `Pkcs11ex.X509` struct or DER binary.         |
+| `:not_signed_data` / `{:not_signed_data, oid}` | CMS       | `Pkcs11ex.CMS.SignedData.parse/1` got a ContentInfo whose contentType is not `id-signedData`. |
+| `:no_signer_info`                       | CMS              | Parsed SignedData carried zero SignerInfos.                                    |
+| `:multiple_signer_info_unsupported_in_v1` | CMS            | Parsed SignedData carried more than one SignerInfo. Multi-signer support is post-v1. |
+| `:no_certificates`                      | CMS              | Parsed SignedData omitted the `certificates` SET (degenerate signer-only CMS not supported in v1). |
+| `:unsupported_certificate_choice`       | CMS              | Parsed SignedData embeds an attribute-cert / extended-cert / `other` CHOICE; only plain X.509 is supported. |
+| `:invalid_embedded_certificate`         | CMS              | Embedded certificate failed `:public_key.pkix_decode_cert/2`.                  |
+| `:leaf_certificate_not_found_in_chain`  | CMS              | SignerInfo `issuerAndSerialNumber` did not match any embedded certificate.     |
+| `:subject_key_identifier_unsupported_in_v1` | CMS          | SignerInfo uses `subjectKeyIdentifier`; only `issuerAndSerialNumber` is supported in v1. |
+| `{:missing_attribute, oid}`             | CMS              | Required signed attribute (e.g. `id-contentType`, `id-messageDigest`) absent.  |
+| `{:multi_value_attribute, oid}`         | CMS              | Signed attribute carried zero or >1 values; v1 expects exactly one.            |
 | `:unknown_signer`                       | trust policy     | `Pkcs11ex.Policy.resolve/2` returned no allowlist match (§2.3.1 step 3).       |
 | `:hint_mismatch`                        | trust policy     | Multiple identity hints in the header disagree (`x5c` vs `x5t#S256` vs `kid`). |
 | `:untrusted_signer`                     | trust policy     | `Pkcs11ex.Policy.validate/3` rejected the signer.                              |
