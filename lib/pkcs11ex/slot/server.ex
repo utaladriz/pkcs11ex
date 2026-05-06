@@ -160,7 +160,10 @@ defmodule Pkcs11ex.Slot.Server do
   """
   @spec import_keypair(atom(), keyword(), keyword()) :: :ok | {:error, term()}
   def import_keypair(slot_ref, args, opts \\ []) do
-    GenServer.call(via({slot_ref, 1}), {:import_keypair, args, opts}, 60_000)
+    case Registry.lookup(Pkcs11ex.Slot.Registry, {slot_ref, 1}) do
+      [] -> {:error, :slot_not_found}
+      [_] -> GenServer.call(via({slot_ref, 1}), {:import_keypair, args, opts}, 60_000)
+    end
   end
 
   @doc "Returns the slot's current state machine state (worker 1)."
