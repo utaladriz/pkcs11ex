@@ -1,4 +1,4 @@
-# Elixir / Mix
+# Elixir / Mix — top-level + sub-packages (sign_core, soft_signer, …)
 /_build/
 /cover/
 /deps/
@@ -8,6 +8,11 @@ erl_crash.dump
 *.ez
 pkcs11ex-*.tar
 /tmp/
+**/_build/
+**/cover/
+**/deps/
+**/doc/
+**/.fetch
 
 # Editors / language servers
 .elixir_ls/
