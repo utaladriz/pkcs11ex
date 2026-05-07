@@ -149,6 +149,85 @@ defmodule SignCore.PDF.Reader do
   end
 
   @doc """
+  Returns the merged xref offsets across every revision in the PDF —
+  newest entry per object number wins (incremental updates override).
+
+  Used by the verify path to enumerate indirect objects by number
+  without picking older revisions of objects that were superseded.
+  """
+  @spec merged_xref_offsets(binary()) ::
+          {:ok, %{non_neg_integer() => non_neg_integer()}} | {:error, error()}
+  def merged_xref_offsets(pdf) when is_binary(pdf) do
+    with {:ok, revs} <- revisions(pdf) do
+      # `revisions/1` returns oldest-first; folding left lets the newest
+      # revision overwrite previous offsets for the same object number.
+      merged =
+        Enum.reduce(revs, %{}, fn %Revision{xref_offsets: xs}, acc ->
+          Map.merge(acc, xs)
+        end)
+
+      {:ok, merged}
+    end
+  end
+
+  @doc """
+  Returns the dict body (the bytes between the object's outer `<<`
+  and matching `>>`) for the object at `offset`. `:not_a_dict` for
+  objects that don't begin with a dict (streams, primitives).
+  """
+  @spec read_dict_at(binary(), non_neg_integer()) ::
+          {:ok, binary()} | {:error, error() | :not_a_dict}
+  def read_dict_at(pdf, offset) do
+    with {:ok, body} <- read_object_body(pdf, offset) do
+      case extract_dict_text(body) do
+        {:ok, dict} -> {:ok, dict}
+        :error -> {:error, :not_a_dict}
+      end
+    end
+  end
+
+  @doc """
+  Returns the list of `{object_number, dict_body}` pairs for every
+  indirect object whose body is a dictionary containing `/Type /Sig`.
+
+  This is the canonical way to locate signature dicts: it ignores
+  comments, content-stream text that happens to mention `/Type /Sig`,
+  and superseded older revisions of the same object number. Each
+  returned dict body is bounded — only the dict content between its
+  outer `<<` and matching `>>`, suitable for whitespace-tolerant
+  regex extraction of `/ByteRange` and `/Contents`.
+  """
+  @spec signature_dicts(binary()) ::
+          {:ok, [{non_neg_integer(), binary()}]} | {:error, error()}
+  def signature_dicts(pdf) do
+    with {:ok, offsets} <- merged_xref_offsets(pdf) do
+      sigs =
+        offsets
+        |> Enum.sort_by(fn {num, _} -> num end)
+        |> Enum.flat_map(fn {num, offset} ->
+          case read_dict_at(pdf, offset) do
+            {:ok, dict} ->
+              if signature_dict?(dict), do: [{num, dict}], else: []
+
+            _ ->
+              []
+          end
+        end)
+
+      {:ok, sigs}
+    end
+  end
+
+  # PDF names are case-sensitive (ISO 32000 §7.3.5). `/Type /Sig` is
+  # the canonical marker for a signature dict; `\b`-style boundaries
+  # would prevent `/Sig` matching as a prefix of e.g. `/SigFlags`,
+  # but PDF tokens end at any of: whitespace, `/`, `<`, `>`, `[`,
+  # `]`, `(`, `)`. We use a character class to be explicit.
+  defp signature_dict?(dict_body) do
+    Regex.match?(~r{/Type\s+/Sig(?=[\s/<>\[\]()]|$)}, dict_body)
+  end
+
+  @doc """
   Returns the catalog dict body (the bytes between `<<` and `>>` of the
   object pointed at by `/Root`). The catalog is what an incremental
   update must re-emit when adding a `/Sig` field — its `/AcroForm` and

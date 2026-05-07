@@ -219,18 +219,23 @@ defmodule Pkcs11ex.PDFSofthsmTest do
       assert {:error, :message_digest_mismatch} = PDF.verify(tampered)
     end
 
-    test "tampered byte inside the hex placeholder surfaces :signature_invalid (or codec error)", ctx do
+    test "tampered byte inside the hex placeholder is rejected", ctx do
       # Flip a byte inside the /Contents hex region. /ByteRange excludes
-      # this region, so messageDigest still matches; the CMS itself
-      # changes, which either fails to parse or fails the signature math.
+      # this region so messageDigest still matches, but the CMS bytes
+      # change. Three possible failure modes — all of them are "we
+      # caught the tamper":
+      #   - :malformed_signature_contents — the new strict DER-length
+      #     check rejects CMS that no longer starts with 0x30 (SEQUENCE)
+      #   - :signature_invalid             — CMS parses but signature math fails
+      #   - {:cms_codec, _, _}             — CMS structure no longer decodable
       pdf = ctx.signed_pdf
       contents_pos = pdf |> :binary.match("/Contents <") |> elem(0) |> Kernel.+(byte_size("/Contents <"))
-      # Flip the first hex digit from '0' to 'F'
       tampered = replace_byte(pdf, contents_pos, ?F)
 
       result = PDF.verify(tampered)
 
-      assert match?({:error, :signature_invalid}, result) or
+      assert match?({:error, :malformed_signature_contents}, result) or
+               match?({:error, :signature_invalid}, result) or
                match?({:error, {:cms_codec, _, _}}, result)
     end
 
@@ -239,9 +244,17 @@ defmodule Pkcs11ex.PDFSofthsmTest do
       assert {:error, :no_signature} = PDF.verify(base_pdf)
     end
 
-    test "PDF with two /Sig dicts surfaces :multiple_signatures_unsupported_in_v1", ctx do
+    test "free-text mentioning /ByteRange appended after signature is detected as append-attack", ctx do
+      # Pre-fix this returned :multiple_signatures_unsupported_in_v1
+      # because the regex-based parser counted the appended `/ByteRange`
+      # text as a second signature. With proper xref-based parsing the
+      # appended free text is correctly ignored as not-a-Sig-object,
+      # and the broader append-attack guard catches the trailing bytes
+      # — which is the more accurate response. The dedicated multi-sig
+      # rejection test lives in `verify_failure_paths_test.exs` with a
+      # correctly-constructed two-Sig fixture.
       forged = ctx.signed_pdf <> "\n%fake-sig\n/ByteRange [0 1 2 3]\n/Contents <00>\n"
-      assert {:error, :multiple_signatures_unsupported_in_v1} = PDF.verify(forged)
+      assert {:error, :incremental_update_after_signature} = PDF.verify(forged)
     end
 
     test "policy refusal short-circuits before any signature math", ctx do

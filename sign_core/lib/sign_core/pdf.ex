@@ -50,7 +50,7 @@ defmodule SignCore.PDF do
 
   alias SignCore.Algorithm
   alias SignCore.CMS.{Parsed, SignedAttributes, SignedData, UnsignedAttributes}
-  alias SignCore.PDF.Writer
+  alias SignCore.PDF.{Reader, Writer}
   alias SignCore.X509
 
   @typedoc "Result of `sign/2`. Failure carries the responsible class as the wrapper."
@@ -297,50 +297,105 @@ defmodule SignCore.PDF do
 
   # ---------- verify-side helpers ----------
 
+  # Locates the (single) PAdES signature in `pdf` by walking the merged
+  # xref via `SignCore.PDF.Reader`, finding indirect objects whose dict
+  # carries `/Type /Sig`, and parsing `/ByteRange` and `/Contents` from
+  # within that bounded dict body. Whitespace-tolerant regexes are safe
+  # here because the dict body is already isolated — content streams,
+  # comments, and superseded older revisions can't pollute the matches.
+  #
+  # No-Sig-objects → `:no_signature`. More than one → the v1 rejection
+  # `:multiple_signatures_unsupported_in_v1`. PDFs whose xref couldn't
+  # be parsed (xref-stream-only PDFs, malformed trailers) surface as
+  # `{:malformed_pdf, _}` from the Reader.
   defp locate_signature(pdf) do
-    byte_ranges =
-      Regex.scan(~r/\/ByteRange \[(\d+) (\d+) (\d+) (\d+)\]/, pdf, capture: :all_but_first)
-
-    contents = Regex.scan(~r/\/Contents <([0-9A-Fa-f]+)>/, pdf, capture: :all_but_first)
-
-    cond do
-      byte_ranges == [] or contents == [] ->
+    case Reader.signature_dicts(pdf) do
+      {:ok, []} ->
         {:error, :no_signature}
 
-      length(byte_ranges) > 1 or length(contents) > 1 ->
+      {:ok, [_, _ | _]} ->
         {:error, :multiple_signatures_unsupported_in_v1}
 
-      true ->
-        [[a_str, b_str, c_str, d_str]] = byte_ranges
-        [[hex]] = contents
-        byte_range = Enum.map([a_str, b_str, c_str, d_str], &String.to_integer/1)
+      {:ok, [{_num, dict_body}]} ->
+        parse_signature_dict(dict_body)
 
-        case Base.decode16(hex, case: :mixed) do
-          {:ok, padded} ->
-            cms_der = strip_trailing_zero_padding(padded)
-            {:ok, byte_range, cms_der}
-
-          :error ->
-            {:error, :malformed_signature_contents}
+      {:error, {:malformed_pdf, _} = err} ->
+        # An unsigned PDF with no /Sig anywhere is the canonical "no
+        # signature" case. The reader can also fail upstream of that
+        # (no xref, no startxref) — for the verify surface we still
+        # report `:no_signature`, since the operator's primary
+        # question is "did this verify?" and a syntactically invalid
+        # PDF answers no.
+        case err do
+          {:malformed_pdf, :startxref_not_found} -> {:error, :no_signature}
+          _ -> {:error, err}
         end
+    end
+  end
+
+  defp parse_signature_dict(dict_body) do
+    with {:ok, byte_range} <- parse_byte_range(dict_body),
+         {:ok, hex} <- parse_contents(dict_body),
+         {:ok, padded} <- decode_contents_hex(hex),
+         {:ok, cms_der} <- strip_trailing_zero_padding(padded) do
+      {:ok, byte_range, cms_der}
+    end
+  end
+
+  defp parse_byte_range(dict_body) do
+    case Regex.run(
+           ~r/\/ByteRange\s*\[\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*\]/,
+           dict_body,
+           capture: :all_but_first
+         ) do
+      [a, b, c, d] ->
+        {:ok, Enum.map([a, b, c, d], &String.to_integer/1)}
+
+      _ ->
+        {:error, :malformed_signature_contents}
+    end
+  end
+
+  defp parse_contents(dict_body) do
+    # /Contents is a hex string per PAdES B-B (the SubFilter
+    # /adbe.pkcs7.detached requires it). Whitespace inside the hex
+    # is permitted by PDF (§7.3.4.3) but our Writer never emits any;
+    # we still strip whitespace from inside the brackets to tolerate
+    # third-party PDFs that include line breaks.
+    case Regex.run(~r/\/Contents\s*<([\s0-9A-Fa-f]+)>/, dict_body, capture: :all_but_first) do
+      [hex_with_ws] ->
+        {:ok, String.replace(hex_with_ws, ~r/\s+/, "")}
+
+      _ ->
+        {:error, :malformed_signature_contents}
+    end
+  end
+
+  defp decode_contents_hex(hex) do
+    case Base.decode16(hex, case: :mixed) do
+      {:ok, decoded} -> {:ok, decoded}
+      :error -> {:error, :malformed_signature_contents}
     end
   end
 
   # CMS DER is left-aligned in the placeholder; trailing bytes are
   # `0x00` filler. The SEQUENCE length prefix tells us where the DER
-  # actually ends.
+  # actually ends. Malformed length bytes are surfaced as
+  # `:malformed_signature_contents` rather than passing the padded
+  # blob through to the parser, which would surface a confusing
+  # downstream error class.
   defp strip_trailing_zero_padding(<<0x30, rest::binary>> = full) do
     case der_length(rest) do
       {:ok, len, len_octets} ->
         total = 1 + len_octets + len
-        binary_part(full, 0, min(total, byte_size(full)))
+        {:ok, binary_part(full, 0, min(total, byte_size(full)))}
 
       :error ->
-        full
+        {:error, :malformed_signature_contents}
     end
   end
 
-  defp strip_trailing_zero_padding(other), do: other
+  defp strip_trailing_zero_padding(_other), do: {:error, :malformed_signature_contents}
 
   defp der_length(<<0::1, len::7, _rest::binary>>), do: {:ok, len, 1}
 
