@@ -469,32 +469,21 @@ defmodule Pkcs11ex.Slot.Server do
       true ->
         {:ok, fresh_logged_in(state)}
 
-      {:error, {:pkcs11_error, msg}} = err ->
-        # PKCS#11 login state is per-token-per-application in most
-        # implementations (SoftHSM, libkmsp11), not per-session as the
-        # spec strictly requires. With session pooling, worker N's login
-        # attempt sees the token already logged in by worker M and gets
-        # CKR_USER_ALREADY_LOGGED_IN back. Treat as success: the desired
-        # state (this session can run private-key ops) is achieved.
-        if user_already_logged_in?(msg) do
-          {:ok, fresh_logged_in(state)}
-        else
-          err
-        end
+      # PKCS#11 login state is per-token-per-application in most
+      # implementations (SoftHSM, libkmsp11), not per-session as the
+      # spec strictly requires. With session pooling, worker N's login
+      # attempt sees the token already logged in by worker M and gets
+      # CKR_USER_ALREADY_LOGGED_IN back. The NIF surfaces that as the
+      # typed `:user_already_logged_in` atom (vs. the opaque
+      # `:pkcs11_error` tuple); treat as success — the desired state
+      # (this session can run private-key ops) is achieved.
+      {:error, :user_already_logged_in} ->
+        {:ok, fresh_logged_in(state)}
 
       {:error, _} = err ->
         err
     end
   end
-
-  # cryptoki 0.12 surfaces RvError::UserAlreadyLoggedIn with a stable
-  # substring across releases — match on it rather than wiring a new
-  # NIF variant for one PKCS#11 quirk.
-  defp user_already_logged_in?(msg) when is_binary(msg) do
-    String.contains?(msg, "already logged")
-  end
-
-  defp user_already_logged_in?(_), do: false
 
   defp fresh_logged_in(state),
     do: %{state | state: :logged_in, pin: nil, last_activity: monotonic_now_ms()}

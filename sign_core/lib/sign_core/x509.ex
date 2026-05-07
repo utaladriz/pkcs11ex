@@ -28,14 +28,15 @@ defmodule SignCore.X509 do
     Record.extract(:OTPSubjectPublicKeyInfo, from_lib: "public_key/include/public_key.hrl")
   )
 
-  defstruct [:der, :public_key, :otp_cert]
+  defstruct [:der, :public_key, :otp_cert, :spki_sha256]
 
   @type otp_cert :: tuple()
 
   @type t :: %__MODULE__{
           der: binary(),
           public_key: term(),
-          otp_cert: otp_cert()
+          otp_cert: otp_cert(),
+          spki_sha256: binary()
         }
 
   @doc """
@@ -45,6 +46,11 @@ defmodule SignCore.X509 do
   the certificate (no validity-period check, no chain validation, no signature
   check); decoding is a structural operation only — trust decisions live in
   `SignCore.Policy`.
+
+  The SPKI SHA-256 pin (used by `SignCore.Policy.PinnedRegistry`) is
+  computed once at construction and cached on the struct — `spki_sha256/1`
+  is then a constant-time field read instead of two repeated ASN.1 passes
+  per verify.
   """
   @spec from_der(binary()) :: {:ok, t()} | {:error, :invalid_cert}
   def from_der(der) when is_binary(der) do
@@ -53,24 +59,33 @@ defmodule SignCore.X509 do
     spki = otp_tbs_certificate(tbs, :subjectPublicKeyInfo)
     pubkey = otp_subject_public_key_info(spki, :subjectPublicKey)
 
-    {:ok, %__MODULE__{der: der, public_key: pubkey, otp_cert: cert}}
+    {:ok,
+     %__MODULE__{
+       der: der,
+       public_key: pubkey,
+       otp_cert: cert,
+       spki_sha256: compute_spki_sha256(der)
+     }}
   rescue
     _ -> {:error, :invalid_cert}
   end
 
   @doc """
-  Computes the SHA-256 hash of the leaf's `subjectPublicKeyInfo` (DER-encoded),
-  hex-lowercase. This is the canonical "SPKI pin" used by
+  Returns the SHA-256 hash of the leaf's `subjectPublicKeyInfo`
+  (DER-encoded), hex-lowercase — the canonical "SPKI pin" used by
   `SignCore.Policy.PinnedRegistry`.
 
-  Implementation note: re-decodes the cert in `:plain` ASN.1 form because OTP's
-  `pkix_encode` doesn't accept `:OTPSubjectPublicKeyInfo`. The plain SPKI
-  record encodes cleanly via `der_encode(:SubjectPublicKeyInfo, ...)`. The
-  one-time decode cost is paid only on registry lookups and verify, not on
-  sign.
+  Cached on the struct at `from_der/1` time; this function is now a
+  field read.
   """
   @spec spki_sha256(t()) :: binary()
-  def spki_sha256(%__MODULE__{der: der}) do
+  def spki_sha256(%__MODULE__{spki_sha256: hash}), do: hash
+
+  # Re-decodes the cert in `:plain` ASN.1 form because OTP's
+  # `der_encode` doesn't accept `:OTPSubjectPublicKeyInfo` — only the
+  # plain `:SubjectPublicKeyInfo` record encodes cleanly. Called once
+  # per cert at `from_der/1` time; the result is stashed on the struct.
+  defp compute_spki_sha256(der) do
     plain_cert = :public_key.pkix_decode_cert(der, :plain)
     plain_tbs = elem(plain_cert, 1)
     plain_spki = elem(plain_tbs, 7)

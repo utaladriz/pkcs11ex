@@ -559,7 +559,12 @@ defmodule SignCore.PDF do
             ],
        do: :pdf
 
-  defp error_class(reason) when reason in [:missing_x5c, :invalid_x5c, :disallowed_alg], do: :jws
+  # `:input` covers cross-format input-validation reasons that aren't
+  # specific to PDF/XML/JWS. Previously misattributed to `:jws` because
+  # the atoms (`:missing_x5c`, etc.) originated in the JWS module —
+  # but for a PDF, a missing cert chain is a CMS / input concern, not
+  # a JWS concern.
+  defp error_class(reason) when reason in [:missing_x5c, :invalid_x5c, :disallowed_alg], do: :input
 
   defp error_class(reason)
        when reason in [

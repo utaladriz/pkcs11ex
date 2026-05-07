@@ -58,7 +58,7 @@ defmodule SignCore.XML.TelemetryTest do
       assert_received {:telemetry, [:pkcs11ex, :sign, :stop], stop_measurements, stop_meta}
       assert is_integer(stop_measurements.duration)
       assert stop_meta.format == :xml
-      assert stop_meta.error_class == :jws
+      assert stop_meta.error_class == :input
       assert stop_meta.error_reason == :missing_x5c
     end
 
@@ -76,7 +76,7 @@ defmodule SignCore.XML.TelemetryTest do
       _ = XML.sign("<doc/>", alg: :HS256, x5c: <<1, 2, 3>>)
 
       assert_received {:telemetry, [:pkcs11ex, :sign, :stop], _, stop_meta}
-      assert stop_meta.error_class == :jws
+      assert stop_meta.error_class == :input
       assert stop_meta.error_reason == :disallowed_alg
     end
   end
