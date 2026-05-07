@@ -1,39 +1,50 @@
 defmodule SignCore.JWS do
   @moduledoc """
-  JWS Detached (RFC 7797) format adapter.
+  JWS format adapter — detached (RFC 7797) by default, attached
+  (RFC 7515) opt-in.
 
-  Builds and parses JWS strings of the shape `base64url(header)..base64url(signature)`
-  — the empty middle segment is the detached payload marker. The protected
-  header always carries `alg`, `b64: false`, `crit: ["b64"]`, and `x5c`.
+  ## Wire formats
 
-  ## Sign opts (Phase 1 surface)
+      <header_b64u>..<sig_b64u>            # detached (default, RFC 7797)
+      <header_b64u>.<payload_b64u>.<sig>   # attached (opt-in, RFC 7515)
 
-  Until the slot supervisor lands, the caller passes the PKCS#11 signer info
-  flat alongside JWS-specific options:
+  Detached form sets `b64: false` + `crit: ["b64"]` in the
+  protected header and uses the raw payload bytes (not base64url'd)
+  in the signing input. Attached form follows standard RFC 7515
+  framing — payload is base64url-encoded into the middle segment.
+
+  ## Sign
 
       SignCore.JWS.sign(payload,
-        # Signer (Layer 2 forwarded)
-        module: module,
-        slot_id: slot_id,
-        pin: pin,
-        key_label: "platform-signing-key",
+        signer: %SomeSigner{...},          # any SignCore.Signer impl
         alg: :PS256,
-        # JWS-specific
-        x5c: leaf_der_binary,                     # or [leaf_der, intermediate_der, ...]
+        x5c: leaf_der_binary,              # or [leaf_der, intermediate_der, ...]
+        attached: false,                   # default — detached
         extra_headers: %{"kid" => "platform-1"}   # optional
       )
 
-  Once the slot supervisor lands the surface will reduce to
-  `signer: {slot_ref, key_ref}` and `x5c` will be auto-fetched from the slot's
-  configured `:cert_label`.
+  ### Optional `:x5c` with `:kid`
+
+  When `:extra_headers` carries a `kid`, `:x5c` becomes optional —
+  the verifier will look up the cert by `kid` (via `:kid_certs` opt
+  on `verify/3` or a kid-aware policy). RFC 7515 §4.1.4.
 
   ## Verify
 
-  `verify/3` does **software-side** mathematical verification via OTP
-  `:public_key`. Verification is a public-key operation — no PKCS#11 access
-  needed. Trust resolution flows through `SignCore.Policy`; the signer's
-  certificate from `x5c` is treated as untrusted input until the policy
-  matches it against an allowlist (specs.md §7.1).
+      SignCore.JWS.verify(jws, payload, opts \\\\ [])
+
+  Auto-detects detached vs attached from the wire format. For
+  detached, `payload` is required. For attached, `payload` may be
+  `nil` (extracted from the middle segment) or supplied (cross-
+  checked against the embedded payload — `:payload_mismatch` if
+  they differ).
+
+  Verification is **software-side** via OTP `:public_key`. No
+  PKCS#11 access needed. Trust resolution flows through
+  `SignCore.Policy` (see `:trust_policy` opt) or via `:kid_certs`
+  for kid-only flows. The signer's certificate from `x5c` is
+  treated as untrusted input until the policy or kid lookup
+  resolves it (specs.md §7.1).
   """
 
   alias SignCore.{Algorithm, X509}
@@ -52,13 +63,15 @@ defmodule SignCore.JWS do
   """
   @spec sign(payload(), keyword()) :: {:ok, jws()} | {:error, term()}
   def sign(payload, opts) when is_list(opts) do
+    attached = Keyword.get(opts, :attached, false)
+
     with {:ok, alg} <- fetch_alg(opts),
          :ok <- check_alg_allowed(alg),
          {:ok, _adapter} <- Algorithm.lookup(alg),
          {:ok, x5c_der_list} <- fetch_x5c(opts),
-         {:ok, header_b64u} <- build_protected_header(alg, x5c_der_list, opts),
+         {:ok, header_b64u} <- build_protected_header(alg, x5c_der_list, attached, opts),
          payload_bin = IO.iodata_to_binary(payload),
-         signing_input = <<header_b64u::binary, ?., payload_bin::binary>>,
+         {payload_segment, signing_input} = build_payload_segments(payload_bin, header_b64u, attached),
          {:ok, signer} <- fetch_signer(opts),
          signer_opts = signer_opts(opts),
          {:ok, sig_bytes} <-
@@ -67,10 +80,23 @@ defmodule SignCore.JWS do
              {:alg, alg} | signer_opts
            ]),
          sig_b64u = Base.url_encode64(sig_bytes, padding: false),
-         jws = <<header_b64u::binary, ?., ?., sig_b64u::binary>>,
+         jws = <<header_b64u::binary, ?., payload_segment::binary, ?., sig_b64u::binary>>,
          :ok <- maybe_audit(jws, payload_bin, alg, opts) do
       {:ok, jws}
     end
+  end
+
+  # RFC 7797 §3 — detached: `b64: false`, signing input includes the raw
+  # payload bytes, wire-format middle segment is empty.
+  # RFC 7515 — attached: middle segment is `base64url(payload)`, signing
+  # input is `<header_b64>.<payload_b64>`.
+  defp build_payload_segments(payload_bin, header_b64u, _attached = true) do
+    payload_b64 = Base.url_encode64(payload_bin, padding: false)
+    {payload_b64, <<header_b64u::binary, ?., payload_b64::binary>>}
+  end
+
+  defp build_payload_segments(payload_bin, header_b64u, _attached = false) do
+    {"", <<header_b64u::binary, ?., payload_bin::binary>>}
   end
 
   # ---------- Audit hook ----------
@@ -145,38 +171,129 @@ defmodule SignCore.JWS do
   # ---------- Verify ----------
 
   @doc """
-  Verify a detached JWS over `payload`.
+  Verify a JWS, detached or attached.
 
-  Returns `{:ok, subject_id}` on success, where `subject_id` is whatever the
-  configured `SignCore.Policy.validate/3` returned. Returns `{:error, reason}`
-  for any of the failure modes documented in `api.md` §4.1.
+  Auto-detects from the wire format:
+
+    * **Detached** (RFC 7797 — `<header>..<sig>`): the empty middle
+      segment marks the payload as supplied externally. The
+      `payload` argument is required.
+    * **Attached** (RFC 7515 — `<header>.<payload>.<sig>`): the
+      payload is encoded in the middle segment. The `payload`
+      argument is optional; if supplied, it is cross-checked
+      against the embedded payload (`:payload_mismatch` if they
+      differ).
+
+  Returns `{:ok, subject_id}` on success.
+
+  ## Identity resolution
+
+  By default, the embedded `x5c` chain is routed through the
+  configured `SignCore.Policy` (`resolve/2` then `validate/3`).
+  For kid-only JWS (no `x5c` in the header), supply `:kid_certs`
+  as a `%{kid_string => leaf_der}` map to look up the leaf cert
+  by `kid` directly:
+
+      SignCore.JWS.verify(jws, payload, kid_certs: %{"acme-2025" => leaf_der})
+
+  When `:kid_certs` resolves a cert, `policy.resolve/2` is
+  bypassed but `policy.validate/3` still runs to derive the
+  `subject_id`.
   """
-  @spec verify(jws(), payload(), keyword()) :: {:ok, term()} | {:error, term()}
-  def verify(jws, payload, opts \\ []) when is_binary(jws) do
-    with {:ok, header_b64u, sig_b64u} <- split_jws(jws),
+  @spec verify(jws(), payload() | nil, keyword()) :: {:ok, term()} | {:error, term()}
+  def verify(jws, payload \\ nil, opts \\ [])
+
+  def verify(jws, payload, opts) when is_binary(jws) and is_list(opts) do
+    with {:ok, header_b64u, payload_segment, sig_b64u} <- split_jws(jws),
          {:ok, header_json} <- decode_b64url(header_b64u),
          {:ok, header} <- decode_json(header_json),
-         :ok <- validate_b64_crit(header),
+         {:ok, mode} <- detect_mode(payload_segment),
+         :ok <- validate_b64_crit_for_mode(header, mode),
+         {:ok, payload_bin} <- resolve_payload(mode, payload, payload_segment),
          {:ok, alg_str} <- fetch_header_alg(header),
          alg = String.to_atom(alg_str),
          :ok <- check_alg_allowed(alg),
          {:ok, adapter} <- Algorithm.lookup(alg),
          {:ok, sig_raw} <- decode_b64url(sig_b64u),
          {:ok, sig} <- adapter.decode_signature(sig_raw, :jose),
-         policy = Keyword.get(opts, :trust_policy, configured_policy()),
-         {:ok, cert, chain} <- policy.resolve(header, opts),
+         {:ok, cert, chain} <- resolve_signer(header, opts),
          :ok <- validate_alg_compat(adapter, cert),
-         {:ok, subject_id} <- policy.validate(cert, chain, Keyword.get(opts, :policy_opts, [])),
-         payload_bin = IO.iodata_to_binary(payload),
-         signing_input = <<header_b64u::binary, ?., payload_bin::binary>>,
+         {:ok, subject_id} <-
+           configured_policy_for(opts).validate(
+             cert,
+             chain,
+             Keyword.get(opts, :policy_opts, [])
+           ),
+         signing_input = build_signing_input(mode, header_b64u, payload_bin, payload_segment),
          :ok <- verify_signature(adapter, signing_input, sig, cert) do
       {:ok, subject_id}
     end
   end
 
+  defp detect_mode(""), do: {:ok, :detached}
+  defp detect_mode(_payload_segment), do: {:ok, :attached}
+
+  # Detached form — the middle segment is empty; use the external `payload` arg.
+  defp resolve_payload(:detached, nil, _segment), do: {:error, :missing_payload}
+
+  defp resolve_payload(:detached, payload, _segment),
+    do: {:ok, IO.iodata_to_binary(payload)}
+
+  # Attached form — extract from middle segment. If caller passed an
+  # external payload, cross-check; flag mismatches.
+  defp resolve_payload(:attached, nil, segment), do: decode_b64url(segment)
+
+  defp resolve_payload(:attached, payload, segment) do
+    with {:ok, embedded} <- decode_b64url(segment) do
+      external = IO.iodata_to_binary(payload)
+      if embedded == external, do: {:ok, embedded}, else: {:error, :payload_mismatch}
+    end
+  end
+
+  defp build_signing_input(:detached, header_b64u, payload_bin, _segment),
+    do: <<header_b64u::binary, ?., payload_bin::binary>>
+
+  defp build_signing_input(:attached, header_b64u, _payload_bin, segment),
+    do: <<header_b64u::binary, ?., segment::binary>>
+
+  # b64/crit are RFC 7797 detached markers — only required (and only
+  # validated) when the JWS is detached. Attached JWS uses standard
+  # RFC 7515 framing, no b64 field.
+  defp validate_b64_crit_for_mode(header, :detached), do: validate_b64_crit(header)
+  defp validate_b64_crit_for_mode(_header, :attached), do: :ok
+
+  # Identity resolution: kid-based lookup if `:kid_certs` is supplied
+  # AND the header carries a `kid` that matches; otherwise fall through
+  # to the configured policy.
+  defp resolve_signer(header, opts) do
+    case kid_lookup(header, opts) do
+      {:ok, leaf_der} ->
+        with {:ok, cert} <- SignCore.X509.from_der(leaf_der) do
+          {:ok, cert, []}
+        end
+
+      :no_kid_match ->
+        policy = configured_policy_for(opts)
+        policy.resolve(header, opts)
+    end
+  end
+
+  defp kid_lookup(header, opts) do
+    with %{} = kid_certs <- Keyword.get(opts, :kid_certs),
+         kid when is_binary(kid) <- Map.get(header, "kid"),
+         leaf_der when is_binary(leaf_der) <- Map.get(kid_certs, kid) do
+      {:ok, leaf_der}
+    else
+      _ -> :no_kid_match
+    end
+  end
+
+  defp configured_policy_for(opts),
+    do: Keyword.get(opts, :trust_policy, configured_policy())
+
   # ---------- Internals: header construction ----------
 
-  defp build_protected_header(alg, x5c_der_list, opts) do
+  defp build_protected_header(alg, x5c_der_list, attached, opts) do
     extras = Keyword.get(opts, :extra_headers, %{})
 
     cond do
@@ -187,19 +304,21 @@ defmodule SignCore.JWS do
         {:error, :reserved_header_overlap}
 
       true ->
-        # x5c per RFC 7515 §4.1.6: standard base64 (no line breaks), DER bytes.
-        x5c_b64 = Enum.map(x5c_der_list, &Base.encode64/1)
+        base = %{"alg" => Atom.to_string(alg)}
 
-        header =
-          extras
-          |> stringify_keys()
-          |> Map.merge(%{
-            "alg" => Atom.to_string(alg),
-            "b64" => false,
-            "crit" => ["b64"],
-            "x5c" => x5c_b64
-          })
+        # RFC 7797 detached markers — attached form drops them.
+        base = if attached, do: base, else: Map.merge(base, %{"b64" => false, "crit" => ["b64"]})
 
+        # x5c per RFC 7515 §4.1.6: base64 (no line breaks), DER bytes.
+        # Omit the field when caller is using kid-only identification
+        # (x5c_der_list is empty in that case).
+        base =
+          case x5c_der_list do
+            [] -> base
+            ders -> Map.put(base, "x5c", Enum.map(ders, &Base.encode64/1))
+          end
+
+        header = extras |> stringify_keys() |> Map.merge(base)
         json = Jason.encode!(header)
         {:ok, Base.url_encode64(json, padding: false)}
     end
@@ -216,8 +335,9 @@ defmodule SignCore.JWS do
 
   defp split_jws(jws) do
     case String.split(jws, ".", parts: 3) do
-      [header, "", signature] when header != "" and signature != "" ->
-        {:ok, header, signature}
+      [header, payload, signature] when header != "" and signature != "" ->
+        # `payload` is "" for detached, base64url for attached.
+        {:ok, header, payload, signature}
 
       _ ->
         {:error, :malformed_jws}
@@ -327,8 +447,27 @@ defmodule SignCore.JWS do
           do: {:ok, ders},
           else: {:error, :invalid_x5c}
 
+      :error ->
+        # x5c is optional when the caller supplies a `kid` in
+        # `:extra_headers` — verifiers look up the cert by `kid`
+        # via their policy or `:kid_certs` opt instead. RFC 7515 §4.1.4.
+        case extra_headers_kid(opts) do
+          nil -> {:error, :missing_x5c}
+          _kid -> {:ok, []}
+        end
+    end
+  end
+
+  defp extra_headers_kid(opts) do
+    case Keyword.get(opts, :extra_headers) do
+      %{} = h ->
+        Enum.find_value(h, fn
+          {k, v} when is_binary(v) -> if stringify(k) == "kid", do: v, else: nil
+          _ -> nil
+        end)
+
       _ ->
-        {:error, :missing_x5c}
+        nil
     end
   end
 

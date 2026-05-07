@@ -1,18 +1,31 @@
 defmodule Pkcs11ex.JWS do
   @moduledoc """
   Convenience wrapper around `SignCore.JWS` pre-configured with the
-  PKCS#11 signer. Same shape as `Pkcs11ex.PDF`.
+  PKCS#11 signer. Supports both detached (RFC 7797, default) and
+  attached (RFC 7515) JWS via the `attached: true` opt; supports
+  optional `:x5c` when a `kid` extra-header is supplied (verifier
+  resolves the cert via `:kid_certs`).
   """
 
-  @doc "JWS RFC 7797 detached sign via the configured PKCS#11 slot."
+  @doc """
+  Sign via the configured PKCS#11 slot.
+
+  Defaults to detached (RFC 7797). Pass `attached: true` for
+  RFC 7515 attached form (payload encoded in the middle segment).
+  """
   @spec sign(iodata(), keyword()) :: {:ok, binary()} | {:error, term()}
   def sign(payload, opts) when is_list(opts) do
     SignCore.JWS.sign(payload, normalise_signer(opts))
   end
 
-  @doc "JWS verify. Delegates to `SignCore.JWS.verify/3`."
-  @spec verify(binary(), iodata(), keyword()) :: {:ok, term()} | {:error, term()}
-  def verify(jws, payload, opts \\ []) when is_binary(jws) do
+  @doc """
+  Verify. Delegates to `SignCore.JWS.verify/3` — auto-detects
+  detached vs attached from the JWS wire format. For detached,
+  pass the payload as the second arg. For attached, pass `nil` (or
+  the payload, which will be cross-checked).
+  """
+  @spec verify(binary(), iodata() | nil, keyword()) :: {:ok, term()} | {:error, term()}
+  def verify(jws, payload \\ nil, opts \\ []) when is_binary(jws) do
     SignCore.JWS.verify(jws, payload, opts)
   end
 
