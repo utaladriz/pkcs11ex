@@ -232,11 +232,11 @@ end
 
 **Built-in implementations:**
 
-| Module                  | `name()` | Status        | Notes                                                                           |
-|-------------------------|----------|---------------|---------------------------------------------------------------------------------|
-| `Pkcs11ex.JWS`          | `:jws`   | v1            | RFC 7515 / 7797 detached. `encoding_context: :jose`.                            |
-| `Pkcs11ex.PDF`          | `:pdf`   | Phase 4       | PAdES B-B; B-T after `pkcs11ex_audit`. `encoding_context: :der`.                |
-| `Pkcs11ex.XML`          | `:xml`   | Phase 4       | XML-DSig + XAdES B-B. C14N is the gating cost. `encoding_context: :der`.        |
+| Module                  | `name()` | Notes                                                                           |
+|-------------------------|----------|---------------------------------------------------------------------------------|
+| `SignCore.JWS`          | `:jws`   | RFC 7515 / 7797 detached. `encoding_context: :jose`.                            |
+| `SignCore.PDF`          | `:pdf`   | PAdES B-B; B-T via `:tsa_url`. `encoding_context: :der`.                        |
+| `SignCore.XML`          | `:xml`   | XML-DSig + XAdES B-B; B-T via `:tsa_url`. `encoding_context: :der`.             |
 
 **Adding a custom format.** Implement the behaviour and register the module under `:formats`:
 
@@ -496,8 +496,8 @@ The reasons listed at step 6 are emitted by `validate/3`; the policy is responsi
 Surfaces are organized by layer:
 - **§3.1 `Pkcs11ex`** — Layer 2 primitives. Format-agnostic.
 - **§3.2 `Pkcs11ex.JWS`** — Layer 3 JWS adapter.
-- **§3.3 `Pkcs11ex.PDF`** *(Phase 4 placeholder)* — Layer 3 PAdES adapter.
-- **§3.4 `Pkcs11ex.XML`** *(Phase 4 placeholder)* — Layer 3 XML-DSig / XAdES adapter.
+- **§3.3 `Pkcs11ex.PDF`** — Layer 3 PAdES adapter.
+- **§3.4 `Pkcs11ex.XML`** — Layer 3 XML-DSig / XAdES adapter.
 - **§3.5 `Pkcs11ex.Slot`** — slot lifecycle and introspection.
 - **§3.6 `Pkcs11ex.PIN`** — scoped PIN helper.
 - **§3.7 `Pkcs11ex.JWS.Plug`** — Phoenix / Plug verifier for JWS over HTTP.
@@ -573,7 +573,7 @@ The `!` variants raise `Pkcs11ex.Error`. Use only where errors are programming b
 
 ### 3.3 `Pkcs11ex.PDF`
 
-PAdES B-B sign + verify. Implementation lands in Phase 4a (steps 6–11).
+PAdES B-B / B-T sign + verify. Convenience wrapper around `SignCore.PDF` that pre-configures the PKCS#11 signer; under the hood the orchestrator lives in `sign_core` and is provider-agnostic.
 
 ```elixir
 @spec sign(pdf_in :: binary(), opts :: keyword()) ::
@@ -610,8 +610,7 @@ Streaming input (`Enumerable.t()`) is post-v1.
 
 ### 3.4 `Pkcs11ex.XML`
 
-XAdES Baseline B (B-B) sign + verify on top of W3C XML-DSig. Lands
-in Phase 4b.
+XAdES Baseline B (B-B) and B-T sign + verify on top of W3C XML-DSig. Convenience wrapper around `SignCore.XML` (pre-configured with the PKCS#11 signer); the provider-agnostic orchestrator lives in `sign_core`.
 
 ```elixir
 @spec sign(doc :: binary(), opts :: keyword()) ::

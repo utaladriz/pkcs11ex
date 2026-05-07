@@ -122,41 +122,38 @@ The HTTP body MUST be byte-identical to what was signed. Frameworks that transfo
 
 The outer JWS is what travels on the wire; the inner JWS is preserved verbatim inside its payload, allowing downstream parties and auditors to verify both layers independently.
 
-### 4.2 PDF (PAdES) — roadmapped, Phase 4
+### 4.2 PDF (PAdES) — shipped
 
-PDF signing follows ETSI EN 319 142 (PAdES). High-level flow:
+PDF signing follows ETSI EN 319 142 (PAdES) and lives in
+`SignCore.PDF`. High-level flow:
 1. Build the PDF with a signature dictionary placeholder reserving space for the signature value (`/Contents`).
 2. Compute a SHA-256 digest over the byte ranges of the PDF excluding the placeholder (`ByteRange`).
 3. Build a CMS `SignedData` structure (RFC 5652) carrying the signed attributes (including the byte-range hash) and a placeholder for the signature value.
 4. Compute the digest of the signed attributes.
-5. Sign that digest with the PKCS#11 key.
+5. Sign that digest via the configured signer.
 6. Inject the resulting CMS bytes into the PDF placeholder.
 
-**Profile target:**
-- v1 of this adapter: **PAdES B-B** (basic baseline).
-- After `pkcs11ex_audit` ships RFC 3161 timestamping: **PAdES B-T**.
-- B-LT and B-LTA are explicitly out of scope for v1.
+**Profile support:**
+- **PAdES B-B** (basic baseline) — default.
+- **PAdES B-T** — opt in with `:tsa_url` to attach an RFC 3161 TimeStampToken as an `unsignedAttr`.
+- B-LT and B-LTA are out of scope.
 
-**Implementation choices (deferred to Phase 4 design):**
-- CMS / `SignedData` construction. No mature pure-Elixir library exists. Likely paths: build a small Elixir CMS module on top of `:public_key`, or expose a Rust crate (e.g., `cms`) through the existing Rustler bridge.
-- PDF byte-range and incremental update handling. Likely a small Elixir module; PAdES doesn't require parsing the whole PDF, just appending an incremental update.
+**Implementation:** hand-rolled in pure Elixir. CMS construction wraps OTP's `'CryptographicMessageSyntax-2009'` ASN.1 codec (`SignCore.CMS.SignedData`). PDF byte-range and incremental-update handling are minimal — `SignCore.PDF.Reader` only scans the trailer/xref and `SignCore.PDF.Writer` only emits the appended update. No full PDF parser.
 
-### 4.3 XML (XML-DSig / XAdES) — roadmapped, Phase 4
+### 4.3 XML (XML-DSig / XAdES) — shipped
 
-XML signatures follow W3C XML-DSig (and ETSI EN 319 132 for XAdES). Core flow:
+XML signatures follow W3C XML-DSig and ETSI EN 319 132 (XAdES) and live in `SignCore.XML`. Core flow:
 1. Build the `<Signature>` element with `<SignedInfo>`, `<Reference>`s, and an empty `<SignatureValue>`.
-2. For each Reference: apply transforms (typically Canonicalize, RFC 3076 / 3741), hash the canonical form, place the digest in the Reference.
-3. Canonicalize `<SignedInfo>`, hash, sign with the PKCS#11 key.
+2. For each Reference: apply transforms (Exclusive C14N 1.0 + enveloped-signature), hash the canonical form, place the digest in the Reference.
+3. Canonicalize `<SignedInfo>`, hash, sign via the configured signer.
 4. Insert the signature into `<SignatureValue>`.
 
-**Profile target:**
-- v1: **XML-DSig** (W3C) and **XAdES B-B**.
-- After `pkcs11ex_audit`: **XAdES B-T**.
-- B-LT / B-LTA out of scope for v1.
+**Profile support:**
+- **XML-DSig** (W3C) + **XAdES B-B** with `<SigningCertificateV2>` and RFC 5035 IssuerSerial.
+- **XAdES B-T** — opt in with `:tsa_url` to attach a `<xades:SignatureTimeStamp>` under `<xades:UnsignedSignatureProperties>`.
+- B-LT / B-LTA out of scope.
 
-**Implementation choices (deferred to Phase 4 design):**
-- XML parsing/serialization: OTP `:xmerl` is sufficient.
-- Canonicalization (C14N): the hard part. No Elixir-native C14N implementation that we'd trust ships today; reuse will likely require porting Apache Santuario (Java) or wrapping `libxmlsec` (C). This is the gating cost item.
+**Implementation:** XML parsing via OTP `:xmerl`. Canonicalization via a vendored + patched copy of `xmerl_c14n` in `sign_core/lib/sign_core/xml/c14n/` — the upstream Hex package crashes on OTP 28's `xmlAttribute` shapes for unprefixed attributes. The patch is a single fallback clause in `do_canonical_name/3`, documented inline. A NIF-wrapped pure-Rust C14N implementation (`bergshamra`) was reserved as a fallback in case the patched `xmerl_c14n` failed standards conformance, but the conformance suite (Poppler `pdfsig` + libxmlsec1 `xmlsec1`) confirms it's correct for the use cases we test.
 
 ### 4.4 Raw Passthrough — primitive, always available
 
@@ -291,15 +288,22 @@ Trust models that *lack* an allowlist gate are not supported. See §10.
 
 ---
 
-## 9. Implementation Roadmap
+## 9. Implementation history
 
-1. **Phase 1 (PoC):** PS256 sign + verify against SoftHSM2 via Rustler. Layer 1 (bridge) + Layer 2 (primitives + algorithms) + Layer 3 JWS adapter. `Pkcs11ex.PKCS12.load/2` for cert/chain loading. Publish a working `mix` library to Hex.
-2. **Phase 2 (Hybrid):** Dynamic driver loading with integrity pinning; first-class support for SafeNet eToken; PIN session lifecycle and `pin_callback` API. `mix pkcs11ex.import_p12` provisioning task for SoftHSM and write-permitted tokens.
-3. **Phase 3 (Cloud):** GCP Cloud HSM integration via `libkmsp11.so`; documented patterns for AWS CloudHSM and Azure Managed HSM. Cloud configuration examples ship in `examples/`, not in this spec.
-4. **Phase 4 (Format Expansion):** PAdES B-B for PDF signing; XML-DSig + XAdES B-B for XML signing. Format adapters can ship as sub-modules of `pkcs11ex` or as sister libraries (`pkcs11ex_pdf`, `pkcs11ex_xml`).
-   - **Phase 4a (PDF / PAdES B-B):** Skeleton landed (`Pkcs11ex.PDF` reserves the public API surface). Full implementation deferred. Blockers documented in module: CMS SignedData construction (OTP's `CryptographicMessageSyntax-2009` codec + open-type attribute encoding) and PDF byte-range / incremental-update manipulation (no mature pure-Elixir PDF library; will likely wrap a Rust crate via the existing Rustler bridge).
-   - **Phase 4b (XML / XML-DSig + XAdES B-B):** Skeleton landed (`Pkcs11ex.XML`). Full implementation deferred. Blockers documented in module: Canonicalization (C14N, RFC 3076 / 3741) — no Elixir-native implementation we'd trust; Apache Santuario port or `libxmlsec` wrapping needed. XML parse/serialize via OTP `:xmerl` is fine.
-5. **Phase 5 (Compliance):** Audit logging via the sister library `pkcs11ex_audit`: append-only hash-chained log adapter, optional RFC 3161 trusted timestamping over chain roots, pluggable storage adapters. Unlocks PAdES B-T / XAdES B-T.
+The library was built in five named phases. All are shipped; this section is preserved as a historical record of the architectural evolution.
+
+1. **Phase 1 — PoC.** PS256 sign + verify against SoftHSM2 via Rustler. Layer 1 (bridge) + Layer 2 (primitives + algorithms) + Layer 3 JWS adapter.
+2. **Phase 2 — Hybrid.** Dynamic driver loading with integrity pinning; first-class SafeNet eToken support; PIN session lifecycle + `pin_callback` API. `mix pkcs11ex.import_p12` provisioning task for SoftHSM and write-permitted tokens.
+3. **Phase 3 — Cloud.** GCP Cloud HSM integration via `libkmsp11.so`. Documented patterns for AWS CloudHSM and Azure Managed HSM. Cloud configuration examples in [`examples/`](../../examples/).
+4. **Phase 4 — Format Expansion.** PAdES B-B (`SignCore.PDF`) and XAdES B-B (`SignCore.XML`). Hand-rolled CMS encoder over OTP's `'CryptographicMessageSyntax-2009'` codec; vendored + patched `xmerl_c14n` for exclusive C14N. Conformance gated by Poppler `pdfsig` and libxmlsec1 `xmlsec1`.
+5. **Phase 5 — Compliance.** `pkcs11ex_audit` sister library: append-only hash-chained log + RFC 3161 anchor. PAdES B-T / XAdES B-T attach `:tsa_url` to fetch and embed a TimeStampToken in `unsignedAttrs` / `<xades:UnsignedSignatureProperties>`.
+
+A subsequent **monorepo split** extracted format-adapter primitives into `sign_core` (provider-agnostic) and software-key signing into `soft_signer` (PKCS#12 + PKCS#8 PEM). `pkcs11ex` now contributes a `Pkcs11ex.Signer` implementation of the `SignCore.Signer` protocol and ships convenience wrappers preserving the existing API.
+
+The roadmap forward is open — no fixed phases. Concrete items being considered:
+- More algorithm adapters (`:ES256`, `:EdDSA`).
+- More signers (cloud KMS providers, PC/SC smart-card readers).
+- B-LT / B-LTA profiles for long-term archival signatures.
 
 ---
 
