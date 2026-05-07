@@ -1,9 +1,9 @@
-defmodule Pkcs11ex.PDF.WriterTest do
+defmodule SignCore.PDF.WriterTest do
   @moduledoc """
-  Black-box tests for `Pkcs11ex.PDF.Writer`.
+  Black-box tests for `SignCore.PDF.Writer`.
 
   All tests build the base PDF via the same fixture builder used in
-  `Pkcs11ex.PDF.ReaderTest`. We deliberately do NOT verify against
+  `SignCore.PDF.ReaderTest`. We deliberately do NOT verify against
   `pdfsig` or `verifypdf` here — those are step 8 / 9 territory and
   would require those external tools in CI. Instead this suite proves
   the structural contract:
@@ -19,7 +19,7 @@ defmodule Pkcs11ex.PDF.WriterTest do
 
   use ExUnit.Case, async: true
 
-  alias Pkcs11ex.PDF.{Reader, Writer}
+  alias SignCore.PDF.{Reader, Writer}
 
   describe "prepare/2 — happy path" do
     test "produces an incremental update the Reader can re-parse" do

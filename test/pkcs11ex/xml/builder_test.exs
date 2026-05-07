@@ -1,19 +1,19 @@
-defmodule Pkcs11ex.XML.BuilderTest do
+defmodule SignCore.XML.BuilderTest do
   @moduledoc """
-  Unit tests for `Pkcs11ex.XML.Builder`. Verify that:
+  Unit tests for `SignCore.XML.Builder`. Verify that:
 
     * Generated `<ds:Reference>`, `<ds:SignedInfo>`, and
       `<ds:Signature>` strings parse cleanly through xmerl.
     * The Builder honours the URI mappings for the JOSE algs we
       support.
     * The output canonicalises deterministically via the Phase
-      4b.1.0 `Pkcs11ex.XML.Canonicalizer` (the bytes a verifier
+      4b.1.0 `SignCore.XML.Canonicalizer` (the bytes a verifier
       actually digests).
   """
 
   use ExUnit.Case, async: true
 
-  alias Pkcs11ex.XML.{Builder, Canonicalizer}
+  alias SignCore.XML.{Builder, Canonicalizer}
 
   describe "URI helpers" do
     test "signature_method_uri/1 maps PS256 and RS256" do

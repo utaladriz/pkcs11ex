@@ -21,8 +21,8 @@ defmodule Pkcs11ex.SafeNet.ConformanceTest do
                  test/pkcs11ex/safenet/conformance_test.exs
 
   This is what closes the loop on the Phase 4b.2 question for
-  hardware: not only do `Pkcs11ex.PDF.verify/2` and
-  `Pkcs11ex.XML.verify/2` accept their own output, but standards-
+  hardware: not only do `SignCore.PDF.verify/2` and
+  `SignCore.XML.verify/2` accept their own output, but standards-
   compliant external implementations accept it too.
   """
 
@@ -31,7 +31,8 @@ defmodule Pkcs11ex.SafeNet.ConformanceTest do
   @moduletag :conformance
   @moduletag :safenet
 
-  alias Pkcs11ex.{Native, PDF, XML}
+  alias Pkcs11ex.Native
+  alias Pkcs11ex.{PDF, XML}
   alias Pkcs11ex.Slot.Server
   alias Pkcs11ex.Test.SafeNet
 
@@ -66,7 +67,7 @@ defmodule Pkcs11ex.SafeNet.ConformanceTest do
               start_supervised({Server, slot_ref: slot_ref, slot_config: slot_config, module: mod})
 
             Application.put_env(:pkcs11ex, :allowed_algs, [:PS256])
-            Application.put_env(:pkcs11ex, :trust_policy, Pkcs11ex.Policy.Allow)
+            Application.put_env(:pkcs11ex, :trust_policy, SignCore.Policy.Allow)
 
             {:ok, slot_ref: slot_ref, leaf_der: leaf_der, leaf_pem: leaf_pem}
           else

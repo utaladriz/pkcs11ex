@@ -1,8 +1,8 @@
 defmodule Pkcs11ex.SafeNet.PDFTest do
   @moduledoc """
   PAdES B-B round-trip against the eToken — the full
-  `Pkcs11ex.PDF.sign/2` -> Layer 2 -> NIF -> hardware ->
-  `Pkcs11ex.PDF.verify/2` pipeline on real hardware.
+  `SignCore.PDF.sign/2` -> Layer 2 -> NIF -> hardware ->
+  `SignCore.PDF.verify/2` pipeline on real hardware.
 
   Wraps the eToken's public key in a software-issued cert (same
   pattern as `SafeNet.JWSTest`) so the embedded `x5c` chain
@@ -55,7 +55,7 @@ defmodule Pkcs11ex.SafeNet.PDFTest do
               start_supervised({Server, slot_ref: slot_ref, slot_config: slot_config, module: mod})
 
             Application.put_env(:pkcs11ex, :allowed_algs, [:PS256])
-            Application.put_env(:pkcs11ex, :trust_policy, Pkcs11ex.Policy.Allow)
+            Application.put_env(:pkcs11ex, :trust_policy, SignCore.Policy.Allow)
 
             {:ok, slot_ref: slot_ref, leaf_der: leaf_der}
           else

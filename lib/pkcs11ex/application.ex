@@ -15,7 +15,7 @@ defmodule Pkcs11ex.Application do
       # PinnedRegistry is started unconditionally (lightweight: one GenServer +
       # one ETS table). Deployments that use a different :trust_policy can
       # leave it idle; deployments that swap in/out at runtime get it for free.
-      Pkcs11ex.Policy.PinnedRegistry,
+      SignCore.Policy.PinnedRegistry,
 
       # Slot server registry — name-resolves {slot_ref, worker_index} → pid
       # for the per-slot GenServers under SlotSupervisor. Pool slots have

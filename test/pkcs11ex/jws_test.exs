@@ -155,7 +155,7 @@ defmodule Pkcs11ex.JWSTest do
 
   describe "verify/3 — software-side round trip" do
     setup do
-      Application.put_env(:pkcs11ex, :trust_policy, Pkcs11ex.Policy.Allow)
+      Application.put_env(:pkcs11ex, :trust_policy, SignCore.Policy.Allow)
 
       software_key = X509.PrivateKey.new_rsa(2048)
       pubkey = X509.PublicKey.derive(software_key)

@@ -93,7 +93,7 @@ defmodule Pkcs11ex.Config do
     signature_header: [type: :string, default: "JWS-Signature"],
     allowed_algs: [type: {:list, {:in, @known_algs}}, default: [:PS256]],
     default_slot: [type: :atom, default: nil],
-    trust_policy: [type: :atom, default: Pkcs11ex.Policy.PinnedRegistry],
+    trust_policy: [type: :atom, default: SignCore.Policy.PinnedRegistry],
     session_timeout: [type: :non_neg_integer, default: 300_000],
     driver_pins: [type: {:map, :string, :string}, default: %{}],
     slots: [

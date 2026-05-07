@@ -3,10 +3,10 @@ defmodule Pkcs11ex.PDFSofthsmTest do
   End-to-end PAdES B-B sign against SoftHSM2.
 
   Sign goes through the full pipeline:
-  `Pkcs11ex.PDF.sign/2` → `Pkcs11ex.PDF.Writer.prepare/2` → CMS
+  `SignCore.PDF.sign/2` → `SignCore.PDF.Writer.prepare/2` → CMS
   attribute build → `Pkcs11ex.sign_bytes/2` → Layer 2 → NIF → cryptoki
-  → SoftHSM2 → `Pkcs11ex.CMS.SignedData.build/3` →
-  `Pkcs11ex.PDF.Writer.inject_signature/2`.
+  → SoftHSM2 → `SignCore.CMS.SignedData.build/3` →
+  `SignCore.PDF.Writer.inject_signature/2`.
 
   Verification is split between this test and step 9. Here we assert
   the structural contract:
@@ -32,9 +32,10 @@ defmodule Pkcs11ex.PDFSofthsmTest do
 
   @moduletag :softhsm
 
-  alias Pkcs11ex.{CMS, PDF}
+  alias SignCore.CMS
+  alias Pkcs11ex.PDF
   alias Pkcs11ex.Native
-  alias Pkcs11ex.PDF.Reader
+  alias SignCore.PDF.Reader
 
   setup_all do
     driver = Pkcs11ex.Test.SoftHSM.driver_path()
@@ -50,7 +51,7 @@ defmodule Pkcs11ex.PDFSofthsmTest do
       true ->
         {:ok, ctx} = bootstrap(driver, softhsm2_util)
         Application.put_env(:pkcs11ex, :allowed_algs, [:PS256])
-        Application.put_env(:pkcs11ex, :trust_policy, Pkcs11ex.Policy.Allow)
+        Application.put_env(:pkcs11ex, :trust_policy, SignCore.Policy.Allow)
         {:ok, ctx}
     end
   end
@@ -247,7 +248,7 @@ defmodule Pkcs11ex.PDFSofthsmTest do
       # Swap the Allow policy for one that refuses everything; verify
       # must return :unknown_signer without crunching the signature.
       Application.put_env(:pkcs11ex, :trust_policy, Pkcs11ex.PDFSofthsmTest.RefusingPolicy)
-      on_exit(fn -> Application.put_env(:pkcs11ex, :trust_policy, Pkcs11ex.Policy.Allow) end)
+      on_exit(fn -> Application.put_env(:pkcs11ex, :trust_policy, SignCore.Policy.Allow) end)
 
       assert {:error, :unknown_signer} = PDF.verify(ctx.signed_pdf)
     end
@@ -277,7 +278,7 @@ defmodule Pkcs11ex.PDFSofthsmTest do
       # the policy gets flagged with the more specific
       # :incremental_update_after_signature error.
       Application.put_env(:pkcs11ex, :trust_policy, Pkcs11ex.PDFSofthsmTest.RefusingPolicy)
-      on_exit(fn -> Application.put_env(:pkcs11ex, :trust_policy, Pkcs11ex.Policy.Allow) end)
+      on_exit(fn -> Application.put_env(:pkcs11ex, :trust_policy, SignCore.Policy.Allow) end)
 
       tampered = ctx.signed_pdf <> "X"
       assert {:error, :incremental_update_after_signature} = PDF.verify(tampered)
@@ -389,7 +390,7 @@ defmodule Pkcs11ex.PDFSofthsmTest do
 
   defmodule RefusingPolicy do
     @moduledoc false
-    @behaviour Pkcs11ex.Policy
+    @behaviour SignCore.Policy
     @impl true
     def resolve(_header, _opts), do: {:error, :unknown_signer}
     @impl true

@@ -1,6 +1,6 @@
 defmodule Pkcs11ex.Conformance.PDFPdfsigTest do
   @moduledoc """
-  Standards-conformance check for `Pkcs11ex.PDF.sign/2` against the
+  Standards-conformance check for `SignCore.PDF.sign/2` against the
   Poppler `pdfsig` CLI — the canonical third-party PAdES verifier
   shipped on every major Linux distro and Homebrew.
 
@@ -48,7 +48,7 @@ defmodule Pkcs11ex.Conformance.PDFPdfsigTest do
     setup_all do
       softhsm2_util = System.find_executable("softhsm2-util")
       Application.put_env(:pkcs11ex, :allowed_algs, [:PS256])
-      Application.put_env(:pkcs11ex, :trust_policy, Pkcs11ex.Policy.Allow)
+      Application.put_env(:pkcs11ex, :trust_policy, SignCore.Policy.Allow)
       {:ok, bootstrap(softhsm2_util)}
     end
 

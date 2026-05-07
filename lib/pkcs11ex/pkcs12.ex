@@ -20,7 +20,7 @@ defmodule Pkcs11ex.PKCS12 do
   Requires `openssl` on `PATH`.
   """
 
-  alias Pkcs11ex.X509
+  alias SignCore.X509
 
   defmodule Bundle do
     @moduledoc """
@@ -28,7 +28,7 @@ defmodule Pkcs11ex.PKCS12 do
 
     `:leaf` is the first cert in the bundle (the end-entity cert in typical
     tax-certificate bundles); `:chain` is the rest in bundle order. Use
-    `Pkcs11ex.X509.spki_sha256/1` if you need the leaf's pinning hash.
+    `SignCore.X509.spki_sha256/1` if you need the leaf's pinning hash.
 
     `:has_private_key` is `true` when the bundle's structure includes a key
     bag (whether or not the password was correct enough to decrypt it). The

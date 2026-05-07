@@ -156,7 +156,7 @@ defmodule Pkcs11ex.SignBytesSignerTest do
       leaf_cert = X509.Certificate.new(pubkey, "/CN=signer-test-leaf", issuer_cert, issuer_key)
       leaf_der = X509.Certificate.to_der(leaf_cert)
 
-      Application.put_env(:pkcs11ex, :trust_policy, Pkcs11ex.Policy.Allow)
+      Application.put_env(:pkcs11ex, :trust_policy, SignCore.Policy.Allow)
 
       payload = "jws via signer-ref"
 

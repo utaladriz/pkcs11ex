@@ -1,6 +1,6 @@
 defmodule Pkcs11ex.X509Test do
   @moduledoc """
-  Direct unit coverage for `Pkcs11ex.X509` — the entry point every
+  Direct unit coverage for `SignCore.X509` — the entry point every
   verify path eventually flows through. Pre-existing tests exercise
   `from_der/1` via the pinned-registry / XAdES flows but never assert
   the malformed-input contract directly.
@@ -8,7 +8,7 @@ defmodule Pkcs11ex.X509Test do
 
   use ExUnit.Case, async: true
 
-  alias Pkcs11ex.X509, as: PkX509
+  alias SignCore.X509, as: PkX509
 
   setup do
     issuer_key = X509.PrivateKey.new_rsa(2048)

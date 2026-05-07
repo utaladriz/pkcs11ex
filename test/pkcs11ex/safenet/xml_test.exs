@@ -1,8 +1,8 @@
 defmodule Pkcs11ex.SafeNet.XMLTest do
   @moduledoc """
   XAdES B-B round-trip against the eToken — the full
-  `Pkcs11ex.XML.sign/2` -> Layer 2 -> NIF -> hardware ->
-  `Pkcs11ex.XML.verify/2` pipeline on real hardware.
+  `SignCore.XML.sign/2` -> Layer 2 -> NIF -> hardware ->
+  `SignCore.XML.verify/2` pipeline on real hardware.
 
   Same wrapper-cert scheme as the JWS / PDF safenet tests; the
   signature math runs against the eToken's actual private key.
@@ -21,7 +21,6 @@ defmodule Pkcs11ex.SafeNet.XMLTest do
   alias Pkcs11ex.Slot.Server
   alias Pkcs11ex.Test.SafeNet
   alias Pkcs11ex.XML
-
   @pin System.get_env("PKCS11EX_SAFENET_PIN")
   @key_label System.get_env("PKCS11EX_SAFENET_KEY_LABEL")
 
@@ -52,7 +51,7 @@ defmodule Pkcs11ex.SafeNet.XMLTest do
               start_supervised({Server, slot_ref: slot_ref, slot_config: slot_config, module: mod})
 
             Application.put_env(:pkcs11ex, :allowed_algs, [:PS256])
-            Application.put_env(:pkcs11ex, :trust_policy, Pkcs11ex.Policy.Allow)
+            Application.put_env(:pkcs11ex, :trust_policy, SignCore.Policy.Allow)
 
             {:ok, slot_ref: slot_ref, leaf_der: leaf_der}
           else

@@ -28,7 +28,7 @@ defmodule Pkcs11ex.Slot do
   session.
 
   Mechanism is the algorithm's PKCS#11 mechanism atom (e.g.,
-  `:ck_sha256_rsa_pkcs_pss` for PS256 — see `Pkcs11ex.Algorithm.PS256.signing_mechanism/0`).
+  `:ck_sha256_rsa_pkcs_pss` for PS256 — see `SignCore.Algorithm.PS256.signing_mechanism/0`).
   """
   @spec sign(atom(), String.t(), atom(), iodata(), keyword()) ::
           {:ok, binary()} | {:error, term()}

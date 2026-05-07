@@ -40,7 +40,7 @@ defmodule Pkcs11ex.JWSSofthsmTest do
       true ->
         {:ok, ctx} = bootstrap(driver, softhsm2_util)
         Application.put_env(:pkcs11ex, :allowed_algs, [:PS256])
-        Application.put_env(:pkcs11ex, :trust_policy, Pkcs11ex.Policy.Allow)
+        Application.put_env(:pkcs11ex, :trust_policy, SignCore.Policy.Allow)
         {:ok, ctx}
     end
   end

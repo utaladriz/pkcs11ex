@@ -1,6 +1,6 @@
 defmodule Pkcs11ex.Conformance.XMLXmlsec1Test do
   @moduledoc """
-  Standards-conformance check for `Pkcs11ex.XML.sign/2` against the
+  Standards-conformance check for `SignCore.XML.sign/2` against the
   `xmlsec1` CLI (libxmlsec1) — the canonical third-party XML-DSig /
   XAdES verifier shipped on every major Linux distro and Homebrew.
 
@@ -13,7 +13,7 @@ defmodule Pkcs11ex.Conformance.XMLXmlsec1Test do
       `apt-get install xmlsec1` on Debian.
 
   This is the test that decides whether the
-  `Pkcs11ex.XML.Canonicalizer.canonicalize_subtree/2` workaround for
+  `SignCore.XML.Canonicalizer.canonicalize_subtree/2` workaround for
   the vendored xmerl_c14n's exc-c14n bug actually produces the same
   bytes a standards-compliant exc-c14n implementation produces. If
   it doesn't, this test fails — and Phase 4b.2 (NIF-wrap
@@ -34,7 +34,7 @@ defmodule Pkcs11ex.Conformance.XMLXmlsec1Test do
     setup_all do
       softhsm2_util = System.find_executable("softhsm2-util")
       Application.put_env(:pkcs11ex, :allowed_algs, [:PS256])
-      Application.put_env(:pkcs11ex, :trust_policy, Pkcs11ex.Policy.Allow)
+      Application.put_env(:pkcs11ex, :trust_policy, SignCore.Policy.Allow)
       {:ok, bootstrap(softhsm2_util)}
     end
 

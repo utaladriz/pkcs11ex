@@ -1,6 +1,6 @@
-defmodule Pkcs11ex.XML.XAdESTest do
+defmodule SignCore.XML.XAdESTest do
   @moduledoc """
-  Tests `Pkcs11ex.XML.XAdES.qualifying_properties/1` produces a
+  Tests `SignCore.XML.XAdES.qualifying_properties/1` produces a
   parseable `<xades:QualifyingProperties>` element with the
   required B-B fields:
 
@@ -19,13 +19,13 @@ defmodule Pkcs11ex.XML.XAdESTest do
 
   use ExUnit.Case, async: true
 
-  alias Pkcs11ex.XML.{Canonicalizer, XAdES}
+  alias SignCore.XML.{Canonicalizer, XAdES}
 
   setup do
     issuer_key = X509.PrivateKey.new_rsa(2048)
     cert = X509.Certificate.self_signed(issuer_key, "/CN=pkcs11ex-xades-test")
     der = X509.Certificate.to_der(cert)
-    {:ok, leaf} = Pkcs11ex.X509.from_der(der)
+    {:ok, leaf} = SignCore.X509.from_der(der)
     {:ok, leaf_cert: leaf, leaf_der: der}
   end
 

@@ -41,11 +41,7 @@ defmodule Pkcs11ex.SlotSupervisor do
         for idx <- 1..size do
           Supervisor.child_spec(
             {Slot.Server,
-             slot_ref: ref,
-             worker_index: idx,
-             slot_config: slot_config,
-             driver_pins: config.driver_pins,
-             module: module},
+             slot_ref: ref, worker_index: idx, slot_config: slot_config, driver_pins: config.driver_pins, module: module},
             id: {Slot.Server, ref, idx}
           )
         end
