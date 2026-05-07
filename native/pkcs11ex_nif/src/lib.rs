@@ -33,6 +33,7 @@ mod atoms {
         key_not_found,
         signature_invalid,
         unsupported_mechanism,
+        user_already_logged_in,
     }
 }
 
@@ -77,16 +78,20 @@ pub enum Error {
     KeyNotFound(String),
     SignatureInvalid,
     UnsupportedMechanism(String),
+    UserAlreadyLoggedIn,
 }
 
 impl From<cryptoki::error::Error> for Error {
     fn from(e: cryptoki::error::Error) -> Self {
-        // Map signature-invalid to its own variant so the Elixir caller gets a
-        // typed atom rather than an opaque pkcs11_error tuple. Other mappings
-        // (CKR_PIN_INCORRECT, CKR_PIN_LOCKED, etc.) land in a later step.
+        // Map well-known RvErrors to their own variants so the Elixir caller
+        // gets typed atoms rather than substring-matching against
+        // `pkcs11_error` strings. Other mappings (CKR_PIN_INCORRECT,
+        // CKR_PIN_LOCKED, etc.) land in a later step.
         if let cryptoki::error::Error::Pkcs11(rv, _) = &e {
-            if *rv == cryptoki::error::RvError::SignatureInvalid {
-                return Error::SignatureInvalid;
+            match rv {
+                cryptoki::error::RvError::SignatureInvalid => return Error::SignatureInvalid,
+                cryptoki::error::RvError::UserAlreadyLoggedIn => return Error::UserAlreadyLoggedIn,
+                _ => {}
             }
         }
         Error::Pkcs11(format!("{e}"))
@@ -107,6 +112,7 @@ impl Encoder for Error {
             Error::UnsupportedMechanism(name) => {
                 (atoms::unsupported_mechanism(), name.as_str()).encode(env)
             }
+            Error::UserAlreadyLoggedIn => atoms::user_already_logged_in().encode(env),
         }
     }
 }

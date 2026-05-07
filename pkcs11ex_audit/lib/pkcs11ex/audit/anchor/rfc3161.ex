@@ -139,34 +139,31 @@ defmodule Pkcs11ex.Audit.Anchor.RFC3161 do
              {:tsa_status, non_neg_integer()}
              | :missing_time_stamp_token
              | {:malformed_tsa_response, term()}}
-  def extract_token(<<0x30, rest::binary>> = _resp) do
+  def extract_token(<<0x30, rest::binary>>) do
     with {:ok, body, _} <- der_take_length(rest),
          {:ok, status_info, after_status} <- der_take_seq(body),
-         {:ok, status, _} <- der_take_int(status_info) do
-      cond do
-        status not in [0, 1] ->
-          {:error, {:tsa_status, status}}
-
-        byte_size(after_status) == 0 ->
-          {:error, :missing_time_stamp_token}
-
-        true ->
-          # `timeStampToken` is the next outer element after PKIStatusInfo.
-          # It's a ContentInfo (SEQUENCE) — return it verbatim.
-          case after_status do
-            <<0x30, _::binary>> = tst -> {:ok, take_full_tlv(tst)}
-            _ -> {:error, :missing_time_stamp_token}
-          end
-      end
-    else
-      {:error, _} = err -> err
-      other -> {:error, {:malformed_tsa_response, other}}
+         {:ok, status, _} <- der_take_int(status_info),
+         :ok <- check_status(status),
+         {:ok, tst_der} <- extract_tst_tlv(after_status) do
+      {:ok, tst_der}
     end
   rescue
     e -> {:error, {:malformed_tsa_response, Exception.message(e)}}
   end
 
   def extract_token(_), do: {:error, {:malformed_tsa_response, :not_der_sequence}}
+
+  # PKIStatusInfo.status: 0 = granted, 1 = grantedWithMods. Anything
+  # else (rejection, waiting, revocationWarning, revocationNotification)
+  # means there's no TST to extract.
+  defp check_status(status) when status in [0, 1], do: :ok
+  defp check_status(status), do: {:error, {:tsa_status, status}}
+
+  # `timeStampToken` is the next outer element after PKIStatusInfo —
+  # a ContentInfo SEQUENCE per RFC 3161 §2.4.2. Returned verbatim
+  # (no parsing — auditors validate the TST against the TSA's chain).
+  defp extract_tst_tlv(<<0x30, _::binary>> = tst), do: {:ok, take_full_tlv(tst)}
+  defp extract_tst_tlv(_), do: {:error, :missing_time_stamp_token}
 
   # Reads one TLV starting at the head, returns the full TLV bytes
   # (tag + length + value).

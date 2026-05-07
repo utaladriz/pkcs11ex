@@ -6,6 +6,9 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ### Changed
 
+- **Telemetry `:error_class` for `:missing_x5c` / `:invalid_x5c` / `:disallowed_alg` is now `:input` instead of `:jws`** for both `SignCore.PDF` and `SignCore.XML`. The previous `:jws` classification leaked the JWS spec name into PDF and XML telemetry, misattributing format-shared input-validation errors. The atom names themselves (e.g. `:missing_x5c`) are unchanged.
+- **`SignCore.X509.from_der/1` now caches the SHA-256 SPKI pin on the struct** (`:spki_sha256` field). `spki_sha256/1` is now a constant-time field read; the second ASN.1 decode pass per call is gone. Construction does the work once; verify and registry lookups pay only the field access.
+- **`Pkcs11ex.Audit.Anchor.RFC3161.extract_token/1` flattened.** The previous `with`-inside-`cond`-inside-`case`-inside-`rescue` layout is replaced with a single `with`-pipeline plus two small helpers (`check_status/1`, `extract_tst_tlv/1`). Functionally identical; readability is now appropriate for a security-relevant codepath.
 - **`SignCore.PDF.verify/2` now uses `SignCore.PDF.Reader` to locate the signature dict via the merged xref**, replacing the previous regex-over-raw-bytes approach. The new path:
   - Walks every revision's xref, takes the newest indirect-object offset per number, scans bodies for `/Type /Sig`, and parses `/ByteRange` / `/Contents` from within the bounded Sig dict body.
   - Tolerates arbitrary PDF whitespace inside the dict — the old regex required exactly one ASCII space and would silently miss legitimate dicts emitted by Adobe / iText / DSS.
