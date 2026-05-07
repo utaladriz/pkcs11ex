@@ -1,7 +1,7 @@
 defmodule Pkcs11exAudit.MixProject do
   use Mix.Project
 
-  @version "0.0.1"
+  @version "0.1.0"
   @source_url "https://github.com/utaladriz/pkcs11ex"
 
   def project do
@@ -15,6 +15,7 @@ defmodule Pkcs11exAudit.MixProject do
       description: description(),
       docs: docs(),
       source_url: @source_url,
+      homepage_url: @source_url,
       name: "pkcs11ex_audit"
     ]
   end
@@ -40,18 +41,20 @@ defmodule Pkcs11exAudit.MixProject do
       licenses: ["Apache-2.0"],
       links: %{
         "GitHub" => @source_url,
-        "Main library" => @source_url
+        "Main library" => @source_url,
+        "Changelog" => "#{@source_url}/blob/main/pkcs11ex_audit/CHANGELOG.md"
       },
       maintainers: ["utaladriz"],
-      files: ~w(lib .formatter.exs mix.exs README.md)
+      files: ~w(lib .formatter.exs mix.exs README.md CHANGELOG.md)
     ]
   end
 
   defp docs do
     [
       main: "readme",
-      extras: ["README.md"],
+      extras: ["README.md", "CHANGELOG.md"],
       source_ref: "v#{@version}",
+      source_url: @source_url,
       groups_for_modules: [
         "Public API": [Pkcs11ex.Audit, Pkcs11ex.Audit.Entry],
         Storage: [Pkcs11ex.Audit.Storage, Pkcs11ex.Audit.Storage.InMemory],
