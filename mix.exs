@@ -12,6 +12,10 @@ defmodule Pkcs11ex.MixProject do
       version: @version,
       elixir: "~> 1.19",
       start_permanent: Mix.env() == :prod,
+      # Protocol consolidation freezes the impl table at compile
+      # time; disable for tests so test-only `defimpl` blocks (e.g.
+      # `JWSTestSigner` in test/pkcs11ex/jws_test.exs) work.
+      consolidate_protocols: Mix.env() != :test,
       deps: deps(),
       package: package(),
       description: description(),

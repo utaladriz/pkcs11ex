@@ -4,6 +4,13 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Added
+
+- **`SignCore.JWS.sign/2` `:attached` opt** — produce attached JWS (RFC 7515 form: `<header>.<payload_b64>.<sig>`) instead of the default detached (RFC 7797 form: `<header>..<sig>`). When attached, the protected header drops `b64`/`crit` and the signing input becomes `<header_b64>.<payload_b64>` per RFC 7515.
+- **`SignCore.JWS.sign/2` optional `:x5c` with `kid`** — when `:extra_headers` carries a `kid`, `:x5c` may be omitted. The header includes `kid` (RFC 7515 §4.1.4) instead of `x5c`; verifiers look up the cert by `kid`.
+- **`SignCore.JWS.verify/3` auto-detection of attached vs detached.** Empty middle segment → detached path (current behavior). Non-empty middle segment → attached path (extract payload from middle, optionally cross-check against caller-supplied `payload` arg). Detached without payload returns `:missing_payload`; attached with mismatched supplied payload returns `:payload_mismatch`.
+- **`SignCore.JWS.verify/3` `:kid_certs` opt** — `%{kid_string => leaf_der}` map for kid-based identity resolution. Bypasses `policy.resolve/2` (the `:kid_certs` map IS the operator-supplied allowlist) but still runs `policy.validate/3` to derive the `subject_id`.
+
 ## [0.1.0]
 
 Initial release. Extracted from the `pkcs11ex` monorepo.
