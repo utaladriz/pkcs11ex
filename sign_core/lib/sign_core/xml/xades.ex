@@ -56,10 +56,10 @@ defmodule SignCore.XML.XAdES do
   Required:
 
     * `:signature_id` — the `Id` of the parent `<ds:Signature>`.
-      Used as the `Target` attribute (`#{}`).
+      Used as the `Target` attribute (`\#{signature_id}`).
     * `:signed_properties_id` — the `Id` for `<xades:SignedProperties>`.
       The data Reference's URI in the `<ds:SignedInfo>` block must
-      point at `##{}`.
+      point at `\#\#{signed_properties_id}`.
     * `:leaf_cert` — `SignCore.X509.t()` for the signing cert.
 
   Optional:

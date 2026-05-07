@@ -2,7 +2,7 @@
 
 Signer-agnostic primitives for digital signatures over PDF (PAdES), XML (XAdES), and JWS — designed to plug into whatever signature source your deployment has.
 
-Part of the [`pkcs11ex` family](https://github.com/utaladriz/pkcs11ex). Use this package alone if you only need to **verify** signed documents; pair with [`pkcs11ex`](../) for HSM signing or [`soft_signer`](../soft_signer/) for software-key signing.
+Part of the [`pkcs11ex` family](https://github.com/utaladriz/pkcs11ex). Use this package alone if you only need to **verify** signed documents; pair with [`pkcs11ex`](https://hex.pm/packages/pkcs11ex) for HSM signing or [`soft_signer`](https://hex.pm/packages/soft_signer) for software-key signing.
 
 ## What's in here
 
@@ -47,7 +47,7 @@ Pick a signer provider and pass it as `:signer`:
   )
 ```
 
-See [`pkcs11ex`](../) for HSM signers or [`soft_signer`](../soft_signer/) for PKCS#12 / PKCS#8 PEM signers.
+See [`pkcs11ex`](https://hex.pm/packages/pkcs11ex) for HSM signers or [`soft_signer`](https://hex.pm/packages/soft_signer) for PKCS#12 / PKCS#8 PEM signers.
 
 ## Implementing a custom signer
 
@@ -77,7 +77,7 @@ That's all. The format adapters (PDF/XML/JWS) don't need to know your provider e
 - **Append-attack detection.** PAdES verify checks `c + d == byte_size(pdf)` before parsing the CMS — bytes appended after the signed range are refused with `:incremental_update_after_signature`.
 - **No software signing in this package.** This package builds the bytes-to-be-signed and assembles the output, but never produces a signature. That's the signer's job. Verify-only deployments shipping just `sign_core` cannot sign by package boundary.
 
-See [`docs/specs/specs.md`](../docs/specs/specs.md) for the canonical specifications.
+See [`docs/specs/specs.md`](https://github.com/utaladriz/pkcs11ex/blob/main/docs/specs/specs.md) for the canonical specifications.
 
 ## License
 

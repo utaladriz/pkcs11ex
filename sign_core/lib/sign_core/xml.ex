@@ -75,10 +75,8 @@ defmodule SignCore.XML do
   @ds_local_key_info "KeyInfo"
   @ds_local_x509_data "X509Data"
   @ds_local_x509_cert "X509Certificate"
-  @ds_local_object "Object"
   @ds_local_reference "Reference"
   @ds_local_digest_value "DigestValue"
-  @xades_local_qp "QualifyingProperties"
   @xades_local_sp "SignedProperties"
   @xades_local_cert_digest "CertDigest"
   @xades_local_issuer_serial_v2 "IssuerSerialV2"
@@ -162,7 +160,7 @@ defmodule SignCore.XML do
   Verify a XAdES B-B-signed XML document.
 
   Returns `{:ok, subject_id}` where `subject_id` is whatever the
-  configured `SignCore.Policy.validate/3` returned. The verify
+  configured `c:SignCore.Policy.validate/3` returned. The verify
   pipeline runs in this order — every step is a checkpoint that
   can refuse the signature with the documented error class:
 
