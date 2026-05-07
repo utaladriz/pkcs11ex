@@ -51,9 +51,15 @@ defmodule Pkcs11ex.Audit do
       :ok = Pkcs11ex.Audit.verify(audit)
   """
 
-  alias Pkcs11ex.Audit.Entry
+  alias Pkcs11ex.Audit.{CanonicalEncoding, Entry}
 
   @genesis_hash <<0::256>>
+
+  # Single-byte tag prepended to every canonical-bytes block before
+  # it's fed into SHA-256. Bumping this requires a parallel verify
+  # path that branches on the tag; old entries stored under v1 stay
+  # verifiable forever. v1 = `Pkcs11ex.Audit.CanonicalEncoding.encode_v1/1`.
+  @hash_format_version 1
 
   defstruct [:storage_module, :storage_handle]
 
@@ -81,7 +87,15 @@ defmodule Pkcs11ex.Audit do
   """
   @spec append(t(), term(), append_opts()) :: {:ok, Entry.t()} | {:error, term()}
   def append(%__MODULE__{} = audit, payload, opts \\ []) do
-    inserted_at = opts[:inserted_at] || DateTime.utc_now() |> DateTime.truncate(:second)
+    # Always truncate to second precision regardless of whether the caller
+    # supplied :inserted_at. The hash binding uses the ISO-8601 string of
+    # this value; sub-second precision in caller-supplied DateTimes would
+    # round-trip lossy through any storage adapter that downcasts (Postgres
+    # `timestamp(0)`, SQLite without explicit microsecond storage), making
+    # `verify/1` fail with :content_hash_mismatch on otherwise-clean chains.
+    inserted_at =
+      (opts[:inserted_at] || DateTime.utc_now())
+      |> DateTime.truncate(:second)
 
     {seq, prev_hash} =
       case audit.storage_module.head(audit.storage_handle) do
@@ -89,36 +103,56 @@ defmodule Pkcs11ex.Audit do
         {:error, :empty} -> {1, @genesis_hash}
       end
 
-    content_hash = compute_hash(prev_hash, seq, payload, inserted_at)
+    try do
+      content_hash = compute_hash(prev_hash, seq, payload, inserted_at)
 
-    entry = %Entry{
-      seq: seq,
-      prev_hash: prev_hash,
-      content_hash: content_hash,
-      payload: payload,
-      inserted_at: inserted_at
-    }
+      entry = %Entry{
+        seq: seq,
+        prev_hash: prev_hash,
+        content_hash: content_hash,
+        payload: payload,
+        inserted_at: inserted_at
+      }
 
-    case audit.storage_module.append(audit.storage_handle, entry) do
-      :ok -> {:ok, entry}
-      {:error, _} = err -> err
+      case audit.storage_module.append(audit.storage_handle, entry) do
+        :ok -> {:ok, entry}
+        {:error, _} = err -> err
+      end
+    rescue
+      e in ArgumentError -> {:error, {:invalid_payload, Exception.message(e)}}
     end
   end
 
   @doc """
   Walk the chain head-to-tail. Recomputes each `content_hash` and checks
-  the `prev_hash` linkage. Returns `:ok` on a clean chain or
+  the `prev_hash` linkage. Returns `:ok` on a clean chain,
+  `{:error, :empty_chain}` for a chain with no entries, or
   `{:error, {reason, seq}}` at the first divergence.
 
-  Reasons:
+  An empty chain returns `:empty_chain` (not `:ok`) so callers can
+  distinguish "nothing to verify" from "everything verified clean."
+  Database-wipe attacks reduce a populated chain to empty; treating
+  empty as success would silently obscure that. RFC 3161 anchoring
+  (see `anchor_head/3`) is the cross-cutting answer to truncation,
+  but `verify/1` should at least surface the truncation-shaped state.
+
+  Reasons for a divergent chain:
     * `:seq_gap` — `seq` doesn't follow the previous entry's `seq + 1`.
     * `:prev_hash_mismatch` — `prev_hash` doesn't match the previous
       entry's `content_hash`.
     * `:content_hash_mismatch` — recomputed hash differs from the stored
       one (the entry's `payload` or `inserted_at` was tampered with).
   """
-  @spec verify(t()) :: :ok | {:error, {atom(), pos_integer()}}
+  @spec verify(t()) ::
+          :ok | {:error, :empty_chain | {atom(), pos_integer()}}
   def verify(%__MODULE__{} = audit) do
+    case audit.storage_module.head(audit.storage_handle) do
+      {:error, :empty} -> {:error, :empty_chain}
+      {:ok, _head} -> walk_chain(audit)
+    end
+  end
+
+  defp walk_chain(audit) do
     audit.storage_module.all(audit.storage_handle)
     |> Enum.reduce_while({@genesis_hash, 1}, fn entry, {prev, expected_seq} ->
       cond do
@@ -201,14 +235,18 @@ defmodule Pkcs11ex.Audit do
   # ---------- Internals ----------
 
   # The hash binding includes everything that defines the entry's identity
-  # at insertion time. ISO-8601 of `inserted_at` is used (not the DateTime
-  # struct directly) so the canonical form survives encoding changes; the
-  # `:deterministic` flag on `term_to_binary/2` ensures map-key order
-  # invariance across runs.
+  # at insertion time, encoded via the format-versioned canonical encoder
+  # in `Pkcs11ex.Audit.CanonicalEncoding`. The leading byte is the format
+  # version tag (currently 1) so a future encoding change can coexist
+  # with old chains by branching on the tag at verify time.
+  #
+  # ISO-8601 of `inserted_at` (not the DateTime struct's internal
+  # representation) is what enters the hash, so the binding is stable
+  # across timezone-DB updates and DateTime struct-shape changes.
   defp compute_hash(prev_hash, seq, payload, inserted_at) do
     canonical =
-      :erlang.term_to_binary({seq, payload, DateTime.to_iso8601(inserted_at)}, [:deterministic])
+      CanonicalEncoding.encode_v1({seq, payload, DateTime.to_iso8601(inserted_at)})
 
-    :crypto.hash(:sha256, prev_hash <> canonical)
+    :crypto.hash(:sha256, prev_hash <> <<@hash_format_version::8>> <> canonical)
   end
 end
