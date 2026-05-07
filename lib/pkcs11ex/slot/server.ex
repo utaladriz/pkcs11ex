@@ -29,6 +29,13 @@ defmodule Pkcs11ex.Slot.Server do
   alias Pkcs11ex.Native
   alias Pkcs11ex.Slot.Pool
 
+  # Default GenServer.call ceilings (ms). All overridable per-call via
+  # `:call_timeout` (and per-slot via `slot_config[:call_timeout]`),
+  # because cloud HSM round-trips and large-key sign operations can blow
+  # past 30s under load.
+  @default_call_timeout 30_000
+  @default_import_timeout 60_000
+
   @typedoc "State machine state of the slot."
   @type slot_state :: :uninitialized | :open | :logged_in
 
@@ -84,7 +91,7 @@ defmodule Pkcs11ex.Slot.Server do
       GenServer.call(
         via({slot_ref, idx}),
         {:sign, key_label, mechanism, IO.iodata_to_binary(data), opts},
-        30_000
+        call_timeout(slot_ref, opts)
       )
 
     :telemetry.execute(
@@ -110,7 +117,7 @@ defmodule Pkcs11ex.Slot.Server do
       GenServer.call(
         via({slot_ref, idx}),
         {:verify, key_label, mechanism, IO.iodata_to_binary(data), signature, opts},
-        30_000
+        call_timeout(slot_ref, opts)
       )
 
     :telemetry.execute(
@@ -137,7 +144,7 @@ defmodule Pkcs11ex.Slot.Server do
   """
   @spec login(atom(), binary()) :: :ok | {:error, term()}
   def login(slot_ref, pin) when is_binary(pin) do
-    GenServer.call(via({slot_ref, 1}), {:login, pin}, 30_000)
+    GenServer.call(via({slot_ref, 1}), {:login, pin}, call_timeout(slot_ref, []))
   end
 
   @doc """
@@ -161,14 +168,19 @@ defmodule Pkcs11ex.Slot.Server do
   @spec import_keypair(atom(), keyword(), keyword()) :: :ok | {:error, term()}
   def import_keypair(slot_ref, args, opts \\ []) do
     case Registry.lookup(Pkcs11ex.Slot.Registry, {slot_ref, 1}) do
-      [] -> {:error, :slot_not_found}
-      [_] -> GenServer.call(via({slot_ref, 1}), {:import_keypair, args, opts}, 60_000)
+      [] ->
+        {:error, :slot_not_found}
+
+      [_] ->
+        timeout = Keyword.get(opts, :call_timeout) || @default_import_timeout
+        GenServer.call(via({slot_ref, 1}), {:import_keypair, args, opts}, timeout)
     end
   end
 
   @doc "Returns the slot's current state machine state (worker 1)."
   @spec status(atom()) :: slot_state()
-  def status(slot_ref), do: GenServer.call(via({slot_ref, 1}), :status)
+  def status(slot_ref),
+    do: GenServer.call(via({slot_ref, 1}), :status, call_timeout(slot_ref, []))
 
   @doc """
   Returns the slot's configured `slot_config` keyword list.
@@ -183,7 +195,7 @@ defmodule Pkcs11ex.Slot.Server do
   def get_config(slot_ref) do
     case Registry.lookup(Pkcs11ex.Slot.Registry, {slot_ref, 1}) do
       [] -> {:error, :slot_not_found}
-      [_] -> GenServer.call(via({slot_ref, 1}), :get_config)
+      [_] -> GenServer.call(via({slot_ref, 1}), :get_config, call_timeout(slot_ref, []))
     end
   end
 
@@ -192,7 +204,20 @@ defmodule Pkcs11ex.Slot.Server do
   PIN again. Targets worker 1 — see `login/2`.
   """
   @spec logout(atom()) :: :ok | {:error, term()}
-  def logout(slot_ref), do: GenServer.call(via({slot_ref, 1}), :logout)
+  def logout(slot_ref),
+    do: GenServer.call(via({slot_ref, 1}), :logout, call_timeout(slot_ref, []))
+
+  # GenServer.call timeout resolution. Per-call `opts[:call_timeout]` wins,
+  # falls back to the application-env-configured default, finally to the
+  # module default. The application env path lets operators widen the
+  # ceiling globally for slow cloud HSMs without threading the opt through
+  # every call site.
+  defp call_timeout(_slot_ref, opts) do
+    case Keyword.get(opts, :call_timeout) do
+      n when is_integer(n) and n > 0 -> n
+      _ -> Application.get_env(:pkcs11ex, :slot_call_timeout, @default_call_timeout)
+    end
+  end
 
   @doc false
   def via({slot_ref, worker_index})
@@ -569,10 +594,8 @@ defmodule Pkcs11ex.Slot.Server do
   defp do_sign(state, mech_str, key_label, data),
     do: Native.sign_with_session(state.session, mech_str, key_label, data)
 
-  defp normalize_native_result({:ok, sig}) when is_binary(sig), do: {:ok, sig}
-  # Rustler 0.37 encodes Vec<u8> returns as Erlang lists; normalize to binary.
-  defp normalize_native_result({:ok, sig}) when is_list(sig), do: {:ok, IO.iodata_to_binary(sig)}
-  defp normalize_native_result(sig) when is_binary(sig), do: {:ok, sig}
-  defp normalize_native_result(sig) when is_list(sig), do: {:ok, IO.iodata_to_binary(sig)}
+  # NIF returns `Result<Vec<u8>, Error>`; Rustler 0.37 encodes Vec<u8> as
+  # an Erlang list, hence the IO.iodata_to_binary call here.
+  defp normalize_native_result({:ok, sig}), do: {:ok, IO.iodata_to_binary(sig)}
   defp normalize_native_result({:error, _} = err), do: err
 end

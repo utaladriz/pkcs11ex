@@ -206,13 +206,10 @@ defmodule Pkcs11ex do
     pin = Keyword.get(opts, :pin, "") || ""
     key_label = Keyword.fetch!(opts, :key_label)
 
+    # NIF returns `Result<Vec<u8>, Error>`; Rustler 0.37 encodes Vec<u8>
+    # as an Erlang list, hence the IO.iodata_to_binary normalisation here.
     case Native.sign(module, slot_id, pin, mechanism, key_label, data) do
-      {:ok, sig} when is_binary(sig) -> {:ok, sig}
-      # Rustler 0.37 encodes Rust `Vec<u8>` returns as Erlang lists (not binaries).
-      # Normalize here so callers always see a binary.
-      {:ok, sig} when is_list(sig) -> {:ok, IO.iodata_to_binary(sig)}
-      sig when is_binary(sig) -> {:ok, sig}
-      sig when is_list(sig) -> {:ok, IO.iodata_to_binary(sig)}
+      {:ok, sig} -> {:ok, IO.iodata_to_binary(sig)}
       {:error, _} = err -> err
     end
   end
@@ -224,7 +221,6 @@ defmodule Pkcs11ex do
 
     case Native.verify(module, slot_id, mechanism, key_label, data, signature) do
       {:ok, true} -> {:ok, true}
-      true -> {:ok, true}
       {:error, _} = err -> err
     end
   end

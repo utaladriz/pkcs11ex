@@ -4,8 +4,21 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Changed
+
+- **`SignCore.PDF.verify/2` now uses `SignCore.PDF.Reader` to locate the signature dict via the merged xref**, replacing the previous regex-over-raw-bytes approach. The new path:
+  - Walks every revision's xref, takes the newest indirect-object offset per number, scans bodies for `/Type /Sig`, and parses `/ByteRange` / `/Contents` from within the bounded Sig dict body.
+  - Tolerates arbitrary PDF whitespace inside the dict — the old regex required exactly one ASCII space and would silently miss legitimate dicts emitted by Adobe / iText / DSS.
+  - Ignores `/ByteRange`/`/Contents` text appearing inside content streams, comments, or trailing free text. The old regex counted those as signatures, leading to false `:multiple_signatures_unsupported_in_v1` rejections on legitimate third-party PDFs.
+  - **Behavior change:** trailing free text appended after the signed revision that *happens* to look like a Sig dict now surfaces as `:incremental_update_after_signature` (the canonical append-attack signal) rather than `:multiple_signatures_unsupported_in_v1`. The dedicated multi-sig rejection now requires real indirect objects with `/Type /Sig` in xref.
+- **`SignCore.PDF.verify/2` malformed-CMS handling tightened.** The trailing-zero-padding stripper now propagates `{:error, :malformed_signature_contents}` when `/Contents` doesn't begin with a SEQUENCE tag, instead of silently passing the malformed bytes to the CMS parser.
+- **`SignCore.JWS.sign/2` switched to a positive opt-allowlist for signer-forwarded options.** Only `:signer`, `:module`, `:slot_id`, `:pin`, `:key_label` flow through to Layer 2; new JWS-internal opts no longer leak into the signer pipeline by default.
+
 ### Added
 
+- **`SignCore.PDF.Reader.merged_xref_offsets/1`** — newest-revision-wins merge of xref tables across all revisions.
+- **`SignCore.PDF.Reader.read_dict_at/2`** — read the dict body at an indirect-object offset.
+- **`SignCore.PDF.Reader.signature_dicts/1`** — enumerate `{object_number, dict_body}` pairs for every indirect object carrying `/Type /Sig`. Used by `SignCore.PDF.verify/2`.
 - **`SignCore.JWS.sign/2` `:attached` opt** — produce attached JWS (RFC 7515 form: `<header>.<payload_b64>.<sig>`) instead of the default detached (RFC 7797 form: `<header>..<sig>`). When attached, the protected header drops `b64`/`crit` and the signing input becomes `<header_b64>.<payload_b64>` per RFC 7515.
 - **`SignCore.JWS.sign/2` optional `:x5c` with `kid`** — when `:extra_headers` carries a `kid`, `:x5c` may be omitted. The header includes `kid` (RFC 7515 §4.1.4) instead of `x5c`; verifiers look up the cert by `kid`.
 - **`SignCore.JWS.verify/3` auto-detection of attached vs detached.** Empty middle segment → detached path (current behavior). Non-empty middle segment → attached path (extract payload from middle, optionally cross-check against caller-supplied `payload` arg). Detached without payload returns `:missing_payload`; attached with mismatched supplied payload returns `:payload_mismatch`.

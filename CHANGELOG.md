@@ -6,6 +6,12 @@ This file tracks the **`pkcs11ex` Hex package** specifically. The sister package
 
 ## [Unreleased]
 
+### Changed
+
+- **Pinned `:rustler` to `~> 0.37.0`** (was `~> 0.36`). `Vec<u8>` encoding shape differs between 0.36 and 0.37; the loose constraint left the NIF return shape ABI-unstable, which had to be papered over with multi-shape return handling in `Pkcs11ex.sign_bytes/2` and `Pkcs11ex.Slot.Server`. Pin removes the ambiguity; redundant return-shape branches dropped.
+- **Configurable `Pkcs11ex.Slot.Server` GenServer.call timeouts** — per-call `:call_timeout` opt and `:slot_call_timeout` application-env knob. Previously hardcoded at 30s for sign/verify/login/logout/status and 60s for `import_keypair`, which silently truncated long-running operations on slow cloud HSMs.
+- **Protocol consolidation re-enabled in `:test`.** The fixture-only `JWSTestSigner` (with its `defimpl SignCore.Signer`) moved to `test/support/`, gated by `elixirc_paths(:test)`. Previously `consolidate_protocols: Mix.env() != :test` worked around the in-test `defimpl`; production and test now run with identical consolidation behavior.
+
 ## [0.1.0]
 
 Initial Hex release. The repository hosts a family of packages from a single git tree (Phoenix-style monorepo); this changelog covers the `pkcs11ex` package — the PKCS#11 hardware provider.

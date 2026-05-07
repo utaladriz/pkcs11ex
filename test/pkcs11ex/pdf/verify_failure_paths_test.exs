@@ -20,31 +20,57 @@ defmodule SignCore.PDF.VerifyFailurePathsTest do
       assert {:error, :no_signature} = PDF.verify("definitely not a pdf")
     end
 
-    test "PDF carrying two /Sig dicts surfaces :multiple_signatures_unsupported_in_v1" do
+    test "PDF carrying two real /Sig objects surfaces :multiple_signatures_unsupported_in_v1" do
+      # Two indirect objects, both with /Type /Sig, both registered in
+      # the xref. Bodies are the smallest-possible valid sig-shaped
+      # dicts (the verify path doesn't reach signature math because
+      # the multi-sig gate trips first).
       pdf =
-        build_unsigned_pdf() <>
-          "\n%sig1\n/ByteRange [0 1 2 3]\n/Contents <00>\n" <>
-          "\n%sig2\n/ByteRange [0 4 5 6]\n/Contents <FF>\n"
+        build_pdf_with_objects([
+          {1, "<< /Type /Catalog /Pages 2 0 R >>"},
+          {2, "<< /Type /Pages /Count 1 /Kids [3 0 R] >>"},
+          {3, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>"},
+          {4, "<< /Type /Sig /ByteRange [0 1 2 3] /Contents <00> >>"},
+          {5, "<< /Type /Sig /ByteRange [0 4 5 6] /Contents <FF> >>"}
+        ])
 
       assert {:error, :multiple_signatures_unsupported_in_v1} = PDF.verify(pdf)
     end
 
-    test "/Contents that isn't valid hex falls under the regex's character class" do
-      # Our regex restricts /Contents to [0-9A-Fa-f]+ between < and >.
-      # A '/Contents <ZZ>' won't match the regex at all, so the file
-      # reads as :no_signature.
-      pdf = build_unsigned_pdf() <> "\n/ByteRange [0 1 2 3] /Contents <ZZ>\n"
+    test "trailing free-text mentioning /ByteRange after %%EOF is ignored" do
+      # Pre-fix this would falsely trip multi-signature detection
+      # because the regex matched bytes outside the xref. The Reader-
+      # based parser walks indirect objects via xref, so trailing
+      # comments / free text are correctly ignored.
+      pdf =
+        build_unsigned_pdf() <>
+          "\n%sig1 /ByteRange [0 1 2 3] /Contents <00>\n"
+
       assert {:error, :no_signature} = PDF.verify(pdf)
+    end
+
+    test "/Contents that isn't valid hex inside a real /Type /Sig surfaces :malformed_signature_contents" do
+      pdf =
+        build_pdf_with_objects([
+          {1, "<< /Type /Catalog /Pages 2 0 R >>"},
+          {2, "<< /Type /Pages /Count 1 /Kids [3 0 R] >>"},
+          {3, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>"},
+          {4, "<< /Type /Sig /ByteRange [0 1 2 3] /Contents <ZZ> >>"}
+        ])
+
+      assert {:error, :malformed_signature_contents} = PDF.verify(pdf)
     end
   end
 
   defp build_unsigned_pdf do
-    objects = [
+    build_pdf_with_objects([
       {1, "<< /Type /Catalog /Pages 2 0 R >>"},
       {2, "<< /Type /Pages /Count 1 /Kids [3 0 R] >>"},
       {3, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>"}
-    ]
+    ])
+  end
 
+  defp build_pdf_with_objects(objects) do
     header = "%PDF-1.7\n"
 
     {body, offsets} =

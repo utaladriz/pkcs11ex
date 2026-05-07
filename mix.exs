@@ -12,10 +12,7 @@ defmodule Pkcs11ex.MixProject do
       version: @version,
       elixir: "~> 1.19",
       start_permanent: Mix.env() == :prod,
-      # Protocol consolidation freezes the impl table at compile
-      # time; disable for tests so test-only `defimpl` blocks (e.g.
-      # `JWSTestSigner` in test/pkcs11ex/jws_test.exs) work.
-      consolidate_protocols: Mix.env() != :test,
+      elixirc_paths: elixirc_paths(Mix.env()),
       deps: deps(),
       package: package(),
       description: description(),
@@ -44,10 +41,17 @@ defmodule Pkcs11ex.MixProject do
     ]
   end
 
+  # `test/support/` carries the fixture-only `JWSTestSigner` (with its
+  # `defimpl SignCore.Signer`). Compiling it only under `:test` keeps
+  # the published Hex package free of test-only modules and lets
+  # protocol consolidation run cleanly in :dev / :prod.
+  defp elixirc_paths(:test), do: ["lib", "test/support"]
+  defp elixirc_paths(_), do: ["lib"]
+
   defp deps do
     [
       # Runtime
-      {:rustler, "~> 0.36"},
+      {:rustler, "~> 0.37.0"},
       {:nimble_options, "~> 1.1"},
       {:telemetry, "~> 1.3"},
       {:jason, "~> 1.4"},

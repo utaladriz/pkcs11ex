@@ -478,18 +478,14 @@ defmodule SignCore.JWS do
     end
   end
 
-  defp signer_opts(opts) do
-    # Forward every PKCS#11-related opt to Layer 2 sign_bytes; drop JWS-only ones.
-    Keyword.drop(opts, [
-      :x5c,
-      :extra_headers,
-      :trust_policy,
-      :policy_opts,
-      :encoding_context,
-      :audit_to,
-      :audit_extra
-    ])
-  end
+  # Positive allowlist of opts to forward to Layer 2 / SignCore.Signer.
+  # Anything outside this list is JWS-internal by default — adding a new
+  # JWS opt does not leak it into the signer pipeline. `:alg` and
+  # `:encoding_context` are added explicitly by the caller, not via this
+  # path, so they're not in the allowlist.
+  @forwarded_signer_opts [:signer, :module, :slot_id, :pin, :key_label]
+
+  defp signer_opts(opts), do: Keyword.take(opts, @forwarded_signer_opts)
 
   defp configured_policy do
     Application.get_env(:pkcs11ex, :trust_policy, SignCore.Policy.PinnedRegistry)
