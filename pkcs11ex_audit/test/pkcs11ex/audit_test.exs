@@ -55,6 +55,28 @@ defmodule Pkcs11ex.AuditTest do
       ts = ~U[2024-01-15 10:00:00Z]
       assert {:ok, %Entry{inserted_at: ^ts}} = Audit.append(audit, "x", inserted_at: ts)
     end
+
+    test "caller-supplied :inserted_at is truncated to second precision", %{audit: audit} do
+      # Sub-second precision in the caller's DateTime would round-trip
+      # lossy through any storage adapter that downcasts (Postgres
+      # `timestamp(0)`, SQLite without explicit microsecond storage),
+      # making `verify/1` fail with :content_hash_mismatch on
+      # otherwise-clean chains. `append/3` truncates unconditionally.
+      sub_second = ~U[2024-01-15 10:00:00.123456Z]
+      assert {:ok, %Entry{inserted_at: stored}} = Audit.append(audit, "x", inserted_at: sub_second)
+      assert stored == ~U[2024-01-15 10:00:00Z]
+      assert :ok = Audit.verify(audit)
+    end
+
+    test "rejects payloads containing unsupported types", %{audit: audit} do
+      # Floats, refs, PIDs, ports, fns are explicitly rejected by the
+      # canonical encoder because their representations are not stable
+      # across BEAM versions / platforms. The audit library surfaces
+      # this as `{:error, {:invalid_payload, _}}` rather than letting
+      # the ArgumentError escape.
+      assert {:error, {:invalid_payload, _msg}} = Audit.append(audit, %{value: 1.5})
+      assert {:error, {:invalid_payload, _msg}} = Audit.append(audit, make_ref())
+    end
   end
 
   describe "head/1, at/2" do
@@ -89,8 +111,12 @@ defmodule Pkcs11ex.AuditTest do
       assert :ok = Audit.verify(audit)
     end
 
-    test ":ok on an empty chain", %{audit: audit} do
-      assert :ok = Audit.verify(audit)
+    test "{:error, :empty_chain} on an empty chain", %{audit: audit} do
+      # An empty chain is distinct from "everything verified clean" —
+      # database-wipe attacks reduce a populated chain to empty, and a
+      # silent :ok would obscure that. Callers can pattern-match the
+      # distinction to decide whether the absence is expected.
+      assert {:error, :empty_chain} = Audit.verify(audit)
     end
 
     test "detects tampering with payload", %{audit: audit, storage_name: name} do

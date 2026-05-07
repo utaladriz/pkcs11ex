@@ -299,12 +299,12 @@ defmodule SignCore.XML do
 
   defp do_attach_signature_timestamp(qp_xml, raw_sig, tsa_url, opts) do
     timeout = Keyword.get(opts, :tsa_timeout, 10_000)
-    sig_value_canonical = canonical_signature_value(raw_sig)
-    digest = :crypto.hash(:sha256, sig_value_canonical)
     rfc3161 = Pkcs11ex.Audit.Anchor.RFC3161
     timestamp_id = "ts-" <> Builder.random_id()
 
-    with {:ok, %{der: req_der}} <- apply(rfc3161, :build_request, [digest]),
+    with {:ok, sig_value_canonical} <- canonical_signature_value(raw_sig),
+         digest = :crypto.hash(:sha256, sig_value_canonical),
+         {:ok, %{der: req_der}} <- apply(rfc3161, :build_request, [digest]),
          {:ok, body} <- apply(rfc3161, :fetch_token, [tsa_url, req_der, [timeout: timeout]]),
          {:ok, tst_der} <- apply(rfc3161, :extract_token, [body]),
          {:ok, up_block} <-
@@ -320,17 +320,17 @@ defmodule SignCore.XML do
   # element exactly as a verifier would produce by extracting the
   # element from the signed doc and canonicalising it (after clearing
   # any inherited default namespace via `canonicalize_subtree`).
+  #
+  # Returns `{:error, {:xml, reason}}` if parse / canonicalisation
+  # fails — never raises, so the surrounding B-T pipeline can route
+  # the failure through its `:bt_failed` wrapper cleanly.
   defp canonical_signature_value(raw_sig) do
-    sig_b64 = Base.encode64(raw_sig)
+    elem_xml = Builder.signature_value(Base.encode64(raw_sig))
 
-    elem_xml =
-      ~s(<ds:SignatureValue xmlns:ds="#{Builder.ds_ns()}">) <>
-        sig_b64 <>
-        "</ds:SignatureValue>"
-
-    {:ok, node} = Canonicalizer.parse(elem_xml)
-    {:ok, canonical} = Canonicalizer.canonicalize(node)
-    canonical
+    with {:ok, node} <- Canonicalizer.parse(elem_xml),
+         {:ok, canonical} <- Canonicalizer.canonicalize(node) do
+      {:ok, canonical}
+    end
   end
 
   # Parse the QP XML, locate the `<xades:SignedProperties>` subtree,
@@ -623,12 +623,31 @@ defmodule SignCore.XML do
     if cert_nodes == [] do
       {:error, :missing_x5c}
     else
-      ders =
-        Enum.map(cert_nodes, fn n ->
-          n |> text_content() |> String.replace(~r/\s+/, "") |> Base.decode64!()
-        end)
+      cert_nodes
+      |> Enum.reduce_while({:ok, []}, fn n, {:ok, acc} ->
+        cleaned = n |> text_content() |> String.replace(~r/\s+/, "")
 
-      {:ok, ders}
+        case Base.decode64(cleaned) do
+          {:ok, der} -> {:cont, {:ok, [der | acc]}}
+          :error -> {:halt, {:error, :invalid_x5c}}
+        end
+      end)
+      |> case do
+        {:ok, reversed} -> {:ok, Enum.reverse(reversed)}
+        err -> err
+      end
+    end
+  end
+
+  # Strip XML whitespace and try to base64-decode. Sender-supplied
+  # untrusted input — must NOT raise; surface as a tagged error so
+  # the verify pipeline's `with` chain handles it cleanly.
+  defp decode_b64_text(node, error_tag) do
+    cleaned = node |> text_content() |> String.replace(~r/\s+/, "")
+
+    case Base.decode64(cleaned) do
+      {:ok, bin} -> {:ok, bin}
+      :error -> {:error, error_tag}
     end
   end
 
@@ -646,19 +665,27 @@ defmodule SignCore.XML do
   defp collect_references(signed_info_node) do
     refs = collect_descendants(signed_info_node, @ds_local_reference)
 
-    {:ok,
-     Enum.map(refs, fn r ->
-       %{
-         uri: attr_value(r, "URI") || "",
-         digest_value:
-           r
-           |> find_child_by_local(@ds_local_digest_value)
-           |> case do
-             {:ok, n} -> n |> text_content() |> String.replace(~r/\s+/, "") |> Base.decode64!()
-             _ -> nil
-           end
-       }
-     end)}
+    refs
+    |> Enum.reduce_while({:ok, []}, fn r, {:ok, acc} ->
+      digest_result =
+        case find_child_by_local(r, @ds_local_digest_value) do
+          {:ok, n} -> decode_b64_text(n, :invalid_reference_digest)
+          _ -> {:ok, nil}
+        end
+
+      case digest_result do
+        {:ok, digest_value} ->
+          ref = %{uri: attr_value(r, "URI") || "", digest_value: digest_value}
+          {:cont, {:ok, [ref | acc]}}
+
+        {:error, _} = err ->
+          {:halt, err}
+      end
+    end)
+    |> case do
+      {:ok, reversed} -> {:ok, Enum.reverse(reversed)}
+      err -> err
+    end
   end
 
   defp locate_signed_properties(sig_node) do
@@ -670,13 +697,7 @@ defmodule SignCore.XML do
   end
 
   defp decode_signature_value(sig_value_node) do
-    raw =
-      sig_value_node
-      |> text_content()
-      |> String.replace(~r/\s+/, "")
-      |> Base.decode64!()
-
-    {:ok, raw}
+    decode_b64_text(sig_value_node, :invalid_signature_value)
   end
 
   defp extract_cert_digest(sig_node) do
@@ -684,8 +705,7 @@ defmodule SignCore.XML do
       [cd_node] ->
         case find_child_by_local(cd_node, @ds_local_digest_value) do
           {:ok, dv_node} ->
-            digest_b64 = dv_node |> text_content() |> String.replace(~r/\s+/, "")
-            {:ok, Base.decode64!(digest_b64)}
+            decode_b64_text(dv_node, :xades_invalid_cert_digest)
 
           err ->
             err
@@ -699,8 +719,7 @@ defmodule SignCore.XML do
   defp extract_issuer_serial_v2(sig_node) do
     case collect_descendants(sig_node, @xades_local_issuer_serial_v2) do
       [is_node] ->
-        b64 = is_node |> text_content() |> String.replace(~r/\s+/, "")
-        {:ok, Base.decode64!(b64)}
+        decode_b64_text(is_node, :xades_invalid_issuer_serial_v2)
 
       _ ->
         {:error, {:xades_missing_issuer_serial_v2, nil}}
@@ -766,37 +785,101 @@ defmodule SignCore.XML do
 
   # Splice the `<ds:Signature>` element into the document before the
   # root's closing tag. The root name comes from the parsed xmerl
-  # tree; we locate the last occurrence of `</root>` (or the
-  # self-closing `<root/>` form) in the source and insert before it.
+  # tree. We locate the last occurrence of `</root>` (or the
+  # self-closing `<root/>` form) in the source — but filtering out
+  # any match that falls inside an XML comment (`<!-- ... -->`) or
+  # CDATA section (`<![CDATA[ ... ]]>`), where the literal text
+  # `</root>` is legal but not a real closing tag.
+  #
+  # Without that filtering, a comment containing the root's name
+  # could shift `List.last/1` onto the wrong byte position.
+  # Well-formed XML can't carry the unescaped `<` outside comments
+  # or CDATA, so this filter covers the realistic threat surface.
   defp splice_signature(xml, root, signature_xml) do
     root_name = elem(root, 1) |> Atom.to_string()
     closing_tag = "</#{root_name}>"
+    excluded = collect_excluded_ranges(xml)
 
-    case :binary.matches(xml, closing_tag) do
-      [] ->
-        # Maybe self-closing root: `<root/>`.
-        self_closing = "<#{root_name}/>"
-
-        case :binary.match(xml, self_closing) do
-          {pos, len} ->
-            prefix = binary_part(xml, 0, pos)
-
-            opening_tag =
-              "<#{root_name}>"
-
-            suffix = binary_part(xml, pos + len, byte_size(xml) - pos - len)
-
-            {:ok, prefix <> opening_tag <> signature_xml <> closing_tag <> suffix}
-
-          :nomatch ->
-            {:error, {:xml, :root_tag_not_found}}
-        end
-
-      matches ->
-        {pos, len} = List.last(matches)
+    case last_match_outside(xml, closing_tag, excluded) do
+      {:ok, pos, len} ->
         prefix = binary_part(xml, 0, pos)
         suffix = binary_part(xml, pos + len, byte_size(xml) - pos - len)
         {:ok, prefix <> signature_xml <> closing_tag <> suffix}
+
+      :error ->
+        # Fall back to self-closing root: `<root/>`. Replace it with
+        # `<root>` + signature + `</root>` (and preserve the suffix).
+        self_closing = "<#{root_name}/>"
+
+        case last_match_outside(xml, self_closing, excluded) do
+          {:ok, pos, len} ->
+            prefix = binary_part(xml, 0, pos)
+            opening_tag = "<#{root_name}>"
+            suffix = binary_part(xml, pos + len, byte_size(xml) - pos - len)
+            {:ok, prefix <> opening_tag <> signature_xml <> closing_tag <> suffix}
+
+          :error ->
+            {:error, {:xml, :root_tag_not_found}}
+        end
+    end
+  end
+
+  # Last `:binary.match/2` position of `pattern` in `xml` whose start
+  # offset does NOT fall inside any of the `excluded` byte ranges.
+  # Returns `{:ok, pos, len}` or `:error` if every match is excluded.
+  defp last_match_outside(xml, pattern, excluded) do
+    xml
+    |> :binary.matches(pattern)
+    |> Enum.reject(fn {pos, _len} ->
+      Enum.any?(excluded, fn {start, end_} -> pos >= start and pos < end_ end)
+    end)
+    |> List.last()
+    |> case do
+      nil -> :error
+      {pos, len} -> {:ok, pos, len}
+    end
+  end
+
+  # Collect the byte ranges occupied by XML comments and CDATA sections.
+  # Anything between `<!--` and `-->` is a comment; anything between
+  # `<![CDATA[` and `]]>` is character data. The parser ignores both at
+  # the structural level, so any pattern matching inside them must not
+  # be treated as a real element marker.
+  #
+  # Comments cannot nest (XML 1.0 §2.5), so a forward sweep finding
+  # non-overlapping start/end pairs is correct. CDATA likewise can't
+  # nest. Mixed comments-inside-CDATA or CDATA-inside-comments are
+  # parsed verbatim as part of the outer block — the outer range
+  # subsumes the inner pattern.
+  defp collect_excluded_ranges(xml) do
+    collect_ranges(xml, "<!--", "-->", 0, []) ++
+      collect_ranges(xml, "<![CDATA[", "]]>", 0, [])
+  end
+
+  defp collect_ranges(xml, start_marker, end_marker, offset, acc) do
+    rest = binary_part(xml, offset, byte_size(xml) - offset)
+
+    case :binary.match(rest, start_marker) do
+      :nomatch ->
+        Enum.reverse(acc)
+
+      {start_pos, start_len} ->
+        after_start_in_rest = start_pos + start_len
+        body = binary_part(rest, after_start_in_rest, byte_size(rest) - after_start_in_rest)
+
+        case :binary.match(body, end_marker) do
+          :nomatch ->
+            # Unterminated comment / CDATA — treat the rest of the
+            # document as inside the block. Conservative; matches what
+            # a real parser would do.
+            abs_start = offset + start_pos
+            Enum.reverse([{abs_start, byte_size(xml)} | acc])
+
+          {end_pos_rel, end_len} ->
+            abs_start = offset + start_pos
+            abs_end = offset + after_start_in_rest + end_pos_rel + end_len
+            collect_ranges(xml, start_marker, end_marker, abs_end, [{abs_start, abs_end} | acc])
+        end
     end
   end
 end

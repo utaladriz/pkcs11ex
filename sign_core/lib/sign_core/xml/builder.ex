@@ -156,6 +156,23 @@ defmodule SignCore.XML.Builder do
       Required for XAdES-LT compatibility; v1 just emits a fresh
       one if not supplied.
   """
+  @doc """
+  Build a standalone `<ds:SignatureValue>` element with the `ds`
+  namespace declared inline. Used by the B-T attach path to compute
+  the canonical bytes of the signature-value element exactly the way
+  a verifier would re-derive them when extracting it from the signed
+  document.
+
+  `value_b64` MUST be base64 already (RFC 4648). The caller is
+  responsible for producing it; this builder just wraps the bytes.
+  """
+  @spec signature_value(binary()) :: String.t()
+  def signature_value(value_b64) when is_binary(value_b64) do
+    ~s(<ds:SignatureValue xmlns:ds="#{@ds_ns}">) <>
+      value_b64 <>
+      "</ds:SignatureValue>"
+  end
+
   @spec signature(String.t(), binary(), [binary()], String.t(), keyword()) :: String.t()
   def signature(
         signed_info_xml,
