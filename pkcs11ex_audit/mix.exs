@@ -27,7 +27,12 @@ defmodule Pkcs11exAudit.MixProject do
   end
 
   defp deps do
-    []
+    [
+      # Dev-only — required by `mix hex.publish` to build the docs
+      # tarball that uploads to hexdocs.pm. Not pulled into runtime
+      # by consumers (`only: :dev, runtime: false`).
+      {:ex_doc, "~> 0.34", only: :dev, runtime: false}
+    ]
   end
 
   defp description do

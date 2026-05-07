@@ -54,8 +54,9 @@ defmodule Pkcs11ex.Audit.CanonicalEncoding do
 
   ## Format versioning
 
-  `Pkcs11ex.Audit.compute_hash/4` prefixes the canonical bytes with a
-  single-byte format tag (`@hash_format_version` in `audit.ex`).
+  `Pkcs11ex.Audit` prefixes the canonical bytes with a single-byte
+  format tag (`@hash_format_version` in `audit.ex`) before they enter
+  SHA-256.
   Future format revisions bump the tag; verify-time hash recomputation
   reads the tag from the stored entry's `:hash_format` field (if
   added later) or assumes v1 (current default). Old entries hashed

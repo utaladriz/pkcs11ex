@@ -34,7 +34,7 @@ defmodule Pkcs11ex.Audit.Storage do
   @doc """
   Iterate the log in order (seq=1 → head). Implementations may stream;
   callers that walk the whole log (e.g., `Pkcs11ex.Audit.verify/1`) treat
-  the return as `Enumerable.t/0`.
+  the return as `t:Enumerable.t/0`.
   """
   @callback all(storage_handle()) :: Enumerable.t()
 end
