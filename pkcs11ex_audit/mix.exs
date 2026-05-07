@@ -44,8 +44,8 @@ defmodule Pkcs11exAudit.MixProject do
         "Main library" => @source_url,
         "Changelog" => "#{@source_url}/blob/main/pkcs11ex_audit/CHANGELOG.md"
       },
-      maintainers: ["utaladriz"],
-      files: ~w(lib .formatter.exs mix.exs README.md CHANGELOG.md)
+      maintainers: ["Ubaldo Taladriz"],
+      files: ~w(lib .formatter.exs mix.exs README.md LICENSE CHANGELOG.md)
     ]
   end
 

@@ -118,7 +118,7 @@ defmodule Pkcs11ex.MixProject do
         "GitHub" => @source_url,
         "Specs" => "#{@source_url}/blob/main/docs/specs/specs.md"
       },
-      maintainers: ["utaladriz"],
+      maintainers: ["Ubaldo Taladriz"],
       files: ~w(
         lib
         native/pkcs11ex_nif/src
