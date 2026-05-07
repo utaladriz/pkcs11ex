@@ -2,7 +2,7 @@ defmodule Pkcs11ex.XMLSofthsmTest do
   @moduledoc """
   End-to-end XAdES B-B sign against SoftHSM2.
 
-  Sign goes through the full pipeline: `Pkcs11ex.XML.sign/2` →
+  Sign goes through the full pipeline: `SignCore.XML.sign/2` →
   Canonicalizer → XAdES → Builder → `Pkcs11ex.sign_bytes/2` →
   Layer 2 → NIF → cryptoki → SoftHSM2 → Builder → string splice.
 
@@ -34,7 +34,7 @@ defmodule Pkcs11ex.XMLSofthsmTest do
 
   alias Pkcs11ex.Native
   alias Pkcs11ex.XML
-  alias Pkcs11ex.XML.{Builder, Canonicalizer}
+  alias SignCore.XML.{Builder, Canonicalizer}
 
   setup_all do
     driver = Pkcs11ex.Test.SoftHSM.driver_path()
@@ -50,7 +50,7 @@ defmodule Pkcs11ex.XMLSofthsmTest do
       true ->
         {:ok, ctx} = bootstrap(driver, softhsm2_util)
         Application.put_env(:pkcs11ex, :allowed_algs, [:PS256])
-        Application.put_env(:pkcs11ex, :trust_policy, Pkcs11ex.Policy.Allow)
+        Application.put_env(:pkcs11ex, :trust_policy, SignCore.Policy.Allow)
         {:ok, ctx}
     end
   end
@@ -194,7 +194,7 @@ defmodule Pkcs11ex.XMLSofthsmTest do
 
     test "policy refusal short-circuits before any signature math", ctx do
       Application.put_env(:pkcs11ex, :trust_policy, Pkcs11ex.XMLSofthsmTest.RefusingPolicy)
-      on_exit(fn -> Application.put_env(:pkcs11ex, :trust_policy, Pkcs11ex.Policy.Allow) end)
+      on_exit(fn -> Application.put_env(:pkcs11ex, :trust_policy, SignCore.Policy.Allow) end)
       assert {:error, :unknown_signer} = XML.verify(ctx.signed_xml)
     end
 
@@ -212,7 +212,7 @@ defmodule Pkcs11ex.XMLSofthsmTest do
 
   defmodule RefusingPolicy do
     @moduledoc false
-    @behaviour Pkcs11ex.Policy
+    @behaviour SignCore.Policy
     @impl true
     def resolve(_h, _o), do: {:error, :unknown_signer}
     @impl true

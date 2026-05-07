@@ -1,7 +1,7 @@
-defmodule Pkcs11ex.PDF.ReaderTest do
+defmodule SignCore.PDF.ReaderTest do
   @moduledoc """
   Synthesises minimal PDFs (no real fixtures committed to the repo) and
-  exercises every primitive `Pkcs11ex.PDF.Reader` exposes:
+  exercises every primitive `SignCore.PDF.Reader` exposes:
 
     * `startxref/1` — locate `startxref <int>` near the file end.
     * `read_revision/2` — parse the xref table + trailer at an offset.
@@ -10,7 +10,7 @@ defmodule Pkcs11ex.PDF.ReaderTest do
     * `next_object_number/1` — derive the next free object number.
 
   The fixtures are valid PDF 1.7 byte-streams with text-format xref
-  subsections — the same wire shape `Pkcs11ex.PDF.Writer` will emit in
+  subsections — the same wire shape `SignCore.PDF.Writer` will emit in
   step 7. We deliberately keep the fixtures small (no page resources,
   no content streams) because the Reader's contract is file-level
   structure only.
@@ -18,8 +18,8 @@ defmodule Pkcs11ex.PDF.ReaderTest do
 
   use ExUnit.Case, async: true
 
-  alias Pkcs11ex.PDF.Reader
-  alias Pkcs11ex.PDF.Reader.Revision
+  alias SignCore.PDF.Reader
+  alias SignCore.PDF.Reader.Revision
 
   describe "startxref/1" do
     test "extracts the trailing offset from a well-formed PDF" do

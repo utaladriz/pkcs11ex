@@ -1,6 +1,6 @@
-defmodule Pkcs11ex.CMS.SignedDataTest do
+defmodule SignCore.CMS.SignedDataTest do
   @moduledoc """
-  Phase 4a step 3 — `Pkcs11ex.CMS.SignedData.build/3`.
+  Phase 4a step 3 — `SignCore.CMS.SignedData.build/3`.
 
   Drives the assembly with a software-generated RSA keypair (test
   fixture only — production paths must use `Pkcs11ex.sign_bytes/2`
@@ -15,8 +15,8 @@ defmodule Pkcs11ex.CMS.SignedDataTest do
 
   use ExUnit.Case, async: true
 
-  alias Pkcs11ex.CMS.{Codec, OIDs, SignedAttributes, SignedData}
-  alias Pkcs11ex.X509, as: PkcsX509
+  alias SignCore.CMS.{Codec, OIDs, SignedAttributes, SignedData}
+  alias SignCore.X509, as: PkcsX509
 
   setup do
     rsa_priv = X509.PrivateKey.new_rsa(2048)
@@ -54,6 +54,7 @@ defmodule Pkcs11ex.CMS.SignedDataTest do
       # Decode and assert top-level shape.
       {:ok, {:ContentInfo, oid, signed_data}} = Codec.decode(:ContentInfo, der)
       assert oid == OIDs.id_signed_data()
+
       assert {:SignedData, :v1, _digest_algs, _enc_ci, _certs, :asn1_NOVALUE, [_signer_info]} =
                signed_data
     end
@@ -176,8 +177,8 @@ defmodule Pkcs11ex.CMS.SignedDataTest do
       assert parsed.message_digest == digest
       assert parsed.signing_time == ~U[2026-05-04 12:34:56Z]
       assert parsed.content_oid == OIDs.id_data()
-      assert %Pkcs11ex.X509{} = parsed.leaf
-      assert [%Pkcs11ex.X509{} = leaf] = parsed.certificates
+      assert %SignCore.X509{} = parsed.leaf
+      assert [%SignCore.X509{} = leaf] = parsed.certificates
       assert leaf.der == ctx.leaf.der
     end
 

@@ -1,4 +1,4 @@
-defmodule Pkcs11ex.XML.CanonicalizerTest do
+defmodule SignCore.XML.CanonicalizerTest do
   @moduledoc """
   Smoke tests for the `xmerl_c14n` wrapper. These don't aspire to
   full W3C exc-c14n conformance — that's the 4b.1.1 audit step; we
@@ -15,7 +15,7 @@ defmodule Pkcs11ex.XML.CanonicalizerTest do
 
   use ExUnit.Case, async: true
 
-  alias Pkcs11ex.XML.Canonicalizer
+  alias SignCore.XML.Canonicalizer
 
   describe "parse/1" do
     test "round-trips a simple element" do

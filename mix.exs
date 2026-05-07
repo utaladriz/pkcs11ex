@@ -46,11 +46,17 @@ defmodule Pkcs11ex.MixProject do
       {:telemetry, "~> 1.3"},
       {:jason, "~> 1.4"},
       {:plug, "~> 1.16", optional: true},
-      # XML canonicalisation for XAdES B-B (Phase 4b) is vendored
-      # in `lib/pkcs11ex/xml/c14n/` — see that file's moduledoc.
 
-      # Test-only fixture support: building X.509 certs that wrap a SoftHSM-resident
-      # public key so verify can mathematically check SoftHSM-produced signatures.
+      # Signer-agnostic format adapters (PDF/PAdES, XML/XAdES, JWS).
+      # `pkcs11ex` provides a `Pkcs11ex.Signer` impl of
+      # `SignCore.Signer` that routes signing through the PKCS#11
+      # NIF; verify-only and software-keyed deployments depend on
+      # `:sign_core` directly without pulling the NIF.
+      {:sign_core, path: "sign_core"},
+
+      # Test-only fixture support: building X.509 certs that wrap a
+      # SoftHSM-resident public key so verify can mathematically check
+      # SoftHSM-produced signatures.
       {:x509, "~> 0.8", only: :test},
 
       # Sister library — opt-in audit trail. The path dep keeps the

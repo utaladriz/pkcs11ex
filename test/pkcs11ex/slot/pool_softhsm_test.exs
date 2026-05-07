@@ -59,12 +59,7 @@ defmodule Pkcs11ex.Slot.PoolSoftHSMTest do
       reauthentication: :prompt
     ]
 
-    {:ok,
-     slot_ref: slot_ref,
-     slot_config: slot_config,
-     pin: user_pin,
-     key_label: key_label,
-     pkcs11_module: module}
+    {:ok, slot_ref: slot_ref, slot_config: slot_config, pin: user_pin, key_label: key_label, pkcs11_module: module}
   end
 
   test "two workers handle signs round-robin and telemetry reflects it", %{
@@ -78,21 +73,13 @@ defmodule Pkcs11ex.Slot.PoolSoftHSMTest do
     # SoftHSM slot.
     {:ok, _pid1} =
       start_supervised(
-        {Server,
-         slot_ref: slot_ref,
-         worker_index: 1,
-         slot_config: slot_config,
-         module: module},
+        {Server, slot_ref: slot_ref, worker_index: 1, slot_config: slot_config, module: module},
         id: {Server, slot_ref, 1}
       )
 
     {:ok, _pid2} =
       start_supervised(
-        {Server,
-         slot_ref: slot_ref,
-         worker_index: 2,
-         slot_config: slot_config,
-         module: module},
+        {Server, slot_ref: slot_ref, worker_index: 2, slot_config: slot_config, module: module},
         id: {Server, slot_ref, 2}
       )
 
@@ -137,15 +124,13 @@ defmodule Pkcs11ex.Slot.PoolSoftHSMTest do
     # after their respective first sign call.
     {:ok, _} =
       start_supervised(
-        {Server,
-         slot_ref: slot_ref, worker_index: 1, slot_config: slot_config, module: module},
+        {Server, slot_ref: slot_ref, worker_index: 1, slot_config: slot_config, module: module},
         id: {Server, slot_ref, 1}
       )
 
     {:ok, _} =
       start_supervised(
-        {Server,
-         slot_ref: slot_ref, worker_index: 2, slot_config: slot_config, module: module},
+        {Server, slot_ref: slot_ref, worker_index: 2, slot_config: slot_config, module: module},
         id: {Server, slot_ref, 2}
       )
 

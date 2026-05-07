@@ -59,7 +59,7 @@ defmodule Pkcs11ex.SafeNet.JWSTest do
               start_supervised({Server, slot_ref: slot_ref, slot_config: slot_config, module: mod})
 
             Application.put_env(:pkcs11ex, :allowed_algs, [:PS256])
-            Application.put_env(:pkcs11ex, :trust_policy, Pkcs11ex.Policy.Allow)
+            Application.put_env(:pkcs11ex, :trust_policy, SignCore.Policy.Allow)
 
             {:ok, slot_ref: slot_ref, leaf_der: leaf_der}
           else

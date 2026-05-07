@@ -17,7 +17,7 @@ defmodule Pkcs11ex.PIN do
   GenServer state.
 
       Pkcs11ex.PIN.with_pin(:legal_proxy, System.get_env("TOKEN_PIN"), fn ->
-        {:ok, jws} = Pkcs11ex.JWS.sign(payload,
+        {:ok, jws} = SignCore.JWS.sign(payload,
           # ... slot-aware sign opts (Phase 2 step 3 will route via :signer)
         )
       end)

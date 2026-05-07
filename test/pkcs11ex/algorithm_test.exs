@@ -1,11 +1,11 @@
 defmodule Pkcs11ex.AlgorithmTest do
   use ExUnit.Case, async: true
 
-  alias Pkcs11ex.Algorithm
+  alias SignCore.Algorithm
 
   describe "lookup/1" do
     test "resolves a registered built-in" do
-      assert {:ok, Pkcs11ex.Algorithm.PS256} = Algorithm.lookup(:PS256)
+      assert {:ok, SignCore.Algorithm.PS256} = Algorithm.lookup(:PS256)
     end
 
     test "returns :unsupported_alg for an unknown atom" do
@@ -26,7 +26,7 @@ defmodule Pkcs11ex.AlgorithmTest do
 
   defmodule Stub do
     @moduledoc false
-    @behaviour Pkcs11ex.Algorithm
+    @behaviour SignCore.Algorithm
 
     @impl true
     def alg, do: :Custom

@@ -1,6 +1,6 @@
-defmodule Pkcs11ex.CMS.CodecTest do
+defmodule SignCore.CMS.CodecTest do
   @moduledoc """
-  Phase 4a step 0 smoke tests for `Pkcs11ex.CMS.Codec`.
+  Phase 4a step 0 smoke tests for `SignCore.CMS.Codec`.
 
   Validates that the OTP `:CryptographicMessageSyntax-2009` codec is
   callable, that our wrapper flattens errors as documented, and that a
@@ -13,7 +13,7 @@ defmodule Pkcs11ex.CMS.CodecTest do
 
   use ExUnit.Case, async: true
 
-  alias Pkcs11ex.CMS.{Codec, OIDs}
+  alias SignCore.CMS.{Codec, OIDs}
 
   describe "encode/decode round-trip" do
     test "minimal SignedData ContentInfo (empty signerInfos, detached content)" do
@@ -22,10 +22,8 @@ defmodule Pkcs11ex.CMS.CodecTest do
       oid_sha256 = OIDs.id_sha256()
 
       inner =
-        {:SignedData, 1,
-         [{:DigestAlgorithmIdentifier, oid_sha256, :asn1_NOVALUE}],
-         {:EncapsulatedContentInfo, oid_data, :asn1_NOVALUE}, :asn1_NOVALUE, :asn1_NOVALUE,
-         []}
+        {:SignedData, 1, [{:DigestAlgorithmIdentifier, oid_sha256, :asn1_NOVALUE}],
+         {:EncapsulatedContentInfo, oid_data, :asn1_NOVALUE}, :asn1_NOVALUE, :asn1_NOVALUE, []}
 
       ci = {:ContentInfo, oid_signed_data, inner}
 
@@ -40,8 +38,7 @@ defmodule Pkcs11ex.CMS.CodecTest do
 
       # OTP normalises the version INTEGER to atoms (`:v1` etc).
       assert {:SignedData, :v1, [{:DigestAlgorithmIdentifier, ^oid_sha256, :asn1_NOVALUE}],
-              {:EncapsulatedContentInfo, ^oid_data, :asn1_NOVALUE}, :asn1_NOVALUE,
-              :asn1_NOVALUE, []} = signed_data
+              {:EncapsulatedContentInfo, ^oid_data, :asn1_NOVALUE}, :asn1_NOVALUE, :asn1_NOVALUE, []} = signed_data
     end
 
     test "decode then re-encode is byte-stable" do
@@ -50,10 +47,8 @@ defmodule Pkcs11ex.CMS.CodecTest do
       oid_sha256 = OIDs.id_sha256()
 
       inner =
-        {:SignedData, 1,
-         [{:DigestAlgorithmIdentifier, oid_sha256, :asn1_NOVALUE}],
-         {:EncapsulatedContentInfo, oid_data, :asn1_NOVALUE}, :asn1_NOVALUE, :asn1_NOVALUE,
-         []}
+        {:SignedData, 1, [{:DigestAlgorithmIdentifier, oid_sha256, :asn1_NOVALUE}],
+         {:EncapsulatedContentInfo, oid_data, :asn1_NOVALUE}, :asn1_NOVALUE, :asn1_NOVALUE, []}
 
       {:ok, der1} = Codec.encode(:ContentInfo, {:ContentInfo, oid_signed_data, inner})
       {:ok, decoded} = Codec.decode(:ContentInfo, der1)
@@ -76,13 +71,13 @@ defmodule Pkcs11ex.CMS.CodecTest do
     end
   end
 
-  describe "Pkcs11ex.CMS.OIDs" do
+  describe "SignCore.CMS.OIDs" do
     test "OID accessors return the correct dotted-decimal tuples" do
-      assert OIDs.id_data() == {1, 2, 840, 113549, 1, 7, 1}
-      assert OIDs.id_signed_data() == {1, 2, 840, 113549, 1, 7, 2}
-      assert OIDs.id_content_type() == {1, 2, 840, 113549, 1, 9, 3}
-      assert OIDs.id_message_digest() == {1, 2, 840, 113549, 1, 9, 4}
-      assert OIDs.id_signing_time() == {1, 2, 840, 113549, 1, 9, 5}
+      assert OIDs.id_data() == {1, 2, 840, 113_549, 1, 7, 1}
+      assert OIDs.id_signed_data() == {1, 2, 840, 113_549, 1, 7, 2}
+      assert OIDs.id_content_type() == {1, 2, 840, 113_549, 1, 9, 3}
+      assert OIDs.id_message_digest() == {1, 2, 840, 113_549, 1, 9, 4}
+      assert OIDs.id_signing_time() == {1, 2, 840, 113_549, 1, 9, 5}
       assert OIDs.id_sha256() == {2, 16, 840, 1, 101, 3, 4, 2, 1}
     end
   end

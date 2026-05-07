@@ -17,7 +17,7 @@
 #
 # After it writes the PDF, the demo:
 #
-#   * self-verifies via `Pkcs11ex.PDF.verify/2` (Allow policy)
+#   * self-verifies via `SignCore.PDF.verify/2` (Allow policy)
 #   * runs `pdfsig` if available — third-party verifier confirmation
 
 driver =
@@ -122,7 +122,7 @@ base_pdf =
     "startxref\n#{startxref_offset}\n%%EOF\n"
 
 {:ok, signed_pdf} =
-  Pkcs11ex.PDF.sign(base_pdf,
+  SignCore.PDF.sign(base_pdf,
     signer: {slot_ref, :signing},
     alg: :PS256,
     x5c: leaf_der,
@@ -136,9 +136,9 @@ out = Path.expand("signed_demo.pdf")
 File.write!(out, signed_pdf)
 IO.puts("--- wrote #{byte_size(signed_pdf)}-byte PDF to #{out}")
 
-case Pkcs11ex.PDF.verify(signed_pdf, trust_policy: Pkcs11ex.Policy.Allow) do
-  {:ok, sid} -> IO.puts("--- Pkcs11ex.PDF.verify: OK (subject_id=#{inspect(sid)})")
-  err -> IO.puts("--- Pkcs11ex.PDF.verify: #{inspect(err)}")
+case SignCore.PDF.verify(signed_pdf, trust_policy: SignCore.Policy.Allow) do
+  {:ok, sid} -> IO.puts("--- SignCore.PDF.verify: OK (subject_id=#{inspect(sid)})")
+  err -> IO.puts("--- SignCore.PDF.verify: #{inspect(err)}")
 end
 
 case System.find_executable("pdfsig") do

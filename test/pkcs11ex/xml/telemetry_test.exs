@@ -1,4 +1,4 @@
-defmodule Pkcs11ex.XML.TelemetryTest do
+defmodule SignCore.XML.TelemetryTest do
   @moduledoc """
   Asserts the telemetry contract (api.md §4.2) for the XML format
   adapter:

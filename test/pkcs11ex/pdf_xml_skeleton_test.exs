@@ -11,9 +11,9 @@ defmodule Pkcs11ex.PDFXMLSkeletonTest do
 
   use ExUnit.Case, async: true
 
-  describe "Pkcs11ex.PDF" do
+  describe "SignCore.PDF" do
     # `sign/2` now actually runs the pipeline (Phase 4a step 8). The skeleton
-    # contract for it has moved to `Pkcs11ex.PDF.WriterTest` and the SoftHSM
+    # contract for it has moved to `SignCore.PDF.WriterTest` and the SoftHSM
     # end-to-end. We keep one assertion here to pin the surface error class
     # for callers that omit `:x5c`.
     test "sign/2 surfaces :missing_x5c when the chain isn't supplied" do
@@ -26,7 +26,7 @@ defmodule Pkcs11ex.PDFXMLSkeletonTest do
     end
   end
 
-  describe "Pkcs11ex.XML" do
+  describe "SignCore.XML" do
     # `sign/2` runs the pipeline now (Phase 4b.1.5). Skeleton contract
     # has moved to the XML unit + :softhsm tests; here we just pin
     # the surface error class for callers that omit `:x5c`.

@@ -14,7 +14,7 @@ defmodule Pkcs11ex.ConfigTest do
       assert config.signature_header == "JWS-Signature"
       assert config.allowed_algs == [:PS256]
       assert config.default_slot == nil
-      assert config.trust_policy == Pkcs11ex.Policy.PinnedRegistry
+      assert config.trust_policy == SignCore.Policy.PinnedRegistry
       assert config.session_timeout == 300_000
       assert config.driver_pins == %{}
       assert config.slots == []

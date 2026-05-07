@@ -1,4 +1,4 @@
-defmodule Pkcs11ex.PDF.VerifyFailurePathsTest do
+defmodule SignCore.PDF.VerifyFailurePathsTest do
   @moduledoc """
   Verify-side failure paths that do **not** require a signed PDF as
   input — i.e., they don't need SoftHSM to produce a fixture. The

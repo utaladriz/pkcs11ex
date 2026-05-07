@@ -68,7 +68,7 @@ defmodule Pkcs11ex.PKCS12Test do
                PKCS12.load(ctx.with_key_path, password: @password)
 
       assert bundle.has_private_key == true
-      assert %Pkcs11ex.X509{} = bundle.leaf
+      assert %SignCore.X509{} = bundle.leaf
       assert bundle.leaf.der == ctx.cert_der
       assert bundle.chain == []
       assert is_nil(bundle.friendly_name)
@@ -90,8 +90,8 @@ defmodule Pkcs11ex.PKCS12Test do
     test "spki_sha256 of the leaf matches the original cert", ctx do
       {:ok, %Bundle{leaf: leaf}} = PKCS12.load(ctx.with_key_path, password: @password)
 
-      {:ok, original} = Pkcs11ex.X509.from_der(ctx.cert_der)
-      assert Pkcs11ex.X509.spki_sha256(leaf) == Pkcs11ex.X509.spki_sha256(original)
+      {:ok, original} = SignCore.X509.from_der(ctx.cert_der)
+      assert SignCore.X509.spki_sha256(leaf) == SignCore.X509.spki_sha256(original)
     end
   end
 

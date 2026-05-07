@@ -1,7 +1,7 @@
-defmodule Pkcs11ex.Algorithm.PS256Test do
+defmodule SignCore.Algorithm.PS256Test do
   use ExUnit.Case, async: true
 
-  alias Pkcs11ex.Algorithm.PS256
+  alias SignCore.Algorithm.PS256
 
   describe "behaviour contract" do
     test "alg/0 returns :PS256" do

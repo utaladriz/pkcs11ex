@@ -1,7 +1,7 @@
-defmodule Pkcs11ex.Policy.PinnedRegistryTest do
+defmodule SignCore.Policy.PinnedRegistryTest do
   use ExUnit.Case, async: false
 
-  alias Pkcs11ex.Policy.PinnedRegistry
+  alias SignCore.Policy.PinnedRegistry
 
   setup do
     # Snapshot whatever is in the registry before each test so we don't bleed
@@ -59,14 +59,14 @@ defmodule Pkcs11ex.Policy.PinnedRegistryTest do
     end
   end
 
-  describe "Pkcs11ex.Policy.resolve/2" do
+  describe "SignCore.Policy.resolve/2" do
     setup do
       software_key = X509.PrivateKey.new_rsa(2048)
       cert = X509.Certificate.self_signed(software_key, "/CN=test-pin")
       der = X509.Certificate.to_der(cert)
       x5c_b64 = Base.encode64(der)
-      {:ok, pkcs11_cert} = Pkcs11ex.X509.from_der(der)
-      spki = Pkcs11ex.X509.spki_sha256(pkcs11_cert)
+      {:ok, pkcs11_cert} = SignCore.X509.from_der(der)
+      spki = SignCore.X509.spki_sha256(pkcs11_cert)
 
       {:ok, der: der, x5c_b64: x5c_b64, spki: spki}
     end
@@ -74,7 +74,7 @@ defmodule Pkcs11ex.Policy.PinnedRegistryTest do
     test "matches when SPKI is in the registry", %{x5c_b64: x5c_b64, spki: spki} do
       :ok = PinnedRegistry.put(spki, :acme)
 
-      assert {:ok, %Pkcs11ex.X509{}, []} =
+      assert {:ok, %SignCore.X509{}, []} =
                PinnedRegistry.resolve(%{"x5c" => [x5c_b64]}, [])
     end
 
@@ -99,13 +99,13 @@ defmodule Pkcs11ex.Policy.PinnedRegistryTest do
     end
   end
 
-  describe "Pkcs11ex.Policy.validate/3" do
+  describe "SignCore.Policy.validate/3" do
     setup do
       software_key = X509.PrivateKey.new_rsa(2048)
       cert = X509.Certificate.self_signed(software_key, "/CN=validate-test")
       der = X509.Certificate.to_der(cert)
-      {:ok, pkcs11_cert} = Pkcs11ex.X509.from_der(der)
-      spki = Pkcs11ex.X509.spki_sha256(pkcs11_cert)
+      {:ok, pkcs11_cert} = SignCore.X509.from_der(der)
+      spki = SignCore.X509.spki_sha256(pkcs11_cert)
 
       {:ok, cert: pkcs11_cert, spki: spki}
     end
@@ -128,8 +128,8 @@ defmodule Pkcs11ex.Policy.PinnedRegistryTest do
       software_key = X509.PrivateKey.new_rsa(2048)
       cert = X509.Certificate.self_signed(software_key, "/CN=jws-pin-test")
       der = X509.Certificate.to_der(cert)
-      {:ok, pkcs11_cert} = Pkcs11ex.X509.from_der(der)
-      spki = Pkcs11ex.X509.spki_sha256(pkcs11_cert)
+      {:ok, pkcs11_cert} = SignCore.X509.from_der(der)
+      spki = SignCore.X509.spki_sha256(pkcs11_cert)
 
       previous_policy = Application.get_env(:pkcs11ex, :trust_policy)
       Application.put_env(:pkcs11ex, :trust_policy, PinnedRegistry)

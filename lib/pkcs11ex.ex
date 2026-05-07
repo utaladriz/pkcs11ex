@@ -4,7 +4,7 @@ defmodule Pkcs11ex do
 
   This module hosts the **Layer 2** signing primitives — format-agnostic
   `sign_bytes`, `verify_bytes`, `digest`, and `digest_stream`. Format adapters
-  (`Pkcs11ex.JWS`, `Pkcs11ex.PDF`, `Pkcs11ex.XML`) build on top.
+  (`SignCore.JWS`, `SignCore.PDF`, `SignCore.XML`) build on top.
 
   See `docs/specs/specs.md` for architecture and `docs/specs/api.md` for the
   full public API specification.
@@ -26,7 +26,7 @@ defmodule Pkcs11ex do
       prefer `:signer`.
   """
 
-  alias Pkcs11ex.Algorithm
+  alias SignCore.Algorithm
   alias Pkcs11ex.Native
 
   @type sign_opts :: [

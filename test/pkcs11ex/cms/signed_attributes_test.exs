@@ -1,4 +1,4 @@
-defmodule Pkcs11ex.CMS.SignedAttributesTest do
+defmodule SignCore.CMS.SignedAttributesTest do
   @moduledoc """
   Phase 4a steps 1+2 — `build/1` builds the three RFC 5652 §11
   required attributes; `to_be_signed/1` re-emits them as the universal
@@ -10,7 +10,7 @@ defmodule Pkcs11ex.CMS.SignedAttributesTest do
 
   use ExUnit.Case, async: true
 
-  alias Pkcs11ex.CMS.{Codec, OIDs, SignedAttributes}
+  alias SignCore.CMS.{Codec, OIDs, SignedAttributes}
 
   @digest_sha256 :crypto.hash(:sha256, "phase 4a smoke payload")
 
@@ -40,24 +40,25 @@ defmodule Pkcs11ex.CMS.SignedAttributesTest do
 
     test "messageDigest carries the supplied digest bytes verbatim" do
       {:ok, attrs} = SignedAttributes.build(digest: @digest_sha256)
-      {:Attribute, _, [digest]} = Enum.find(attrs, &match?({:Attribute, {1, 2, 840, 113549, 1, 9, 4}, _}, &1))
+      {:Attribute, _, [digest]} = Enum.find(attrs, &match?({:Attribute, {1, 2, 840, 113_549, 1, 9, 4}, _}, &1))
       assert digest == @digest_sha256
     end
 
     test "contentType defaults to id-data; can be overridden" do
       {:ok, default_attrs} = SignedAttributes.build(digest: @digest_sha256)
+
       {:Attribute, _, [content_oid]} =
-        Enum.find(default_attrs, &match?({:Attribute, {1, 2, 840, 113549, 1, 9, 3}, _}, &1))
+        Enum.find(default_attrs, &match?({:Attribute, {1, 2, 840, 113_549, 1, 9, 3}, _}, &1))
 
       assert content_oid == OIDs.id_data()
 
-      override = {1, 2, 840, 113549, 1, 7, 2}
+      override = {1, 2, 840, 113_549, 1, 7, 2}
 
       {:ok, override_attrs} =
         SignedAttributes.build(digest: @digest_sha256, content_oid: override)
 
       {:Attribute, _, [content_oid_override]} =
-        Enum.find(override_attrs, &match?({:Attribute, {1, 2, 840, 113549, 1, 9, 3}, _}, &1))
+        Enum.find(override_attrs, &match?({:Attribute, {1, 2, 840, 113_549, 1, 9, 3}, _}, &1))
 
       assert content_oid_override == override
     end
@@ -67,7 +68,7 @@ defmodule Pkcs11ex.CMS.SignedAttributesTest do
       {:ok, attrs} = SignedAttributes.build(digest: @digest_sha256, signing_time: fixed_dt)
 
       {:Attribute, _, [time_choice]} =
-        Enum.find(attrs, &match?({:Attribute, {1, 2, 840, 113549, 1, 9, 5}, _}, &1))
+        Enum.find(attrs, &match?({:Attribute, {1, 2, 840, 113_549, 1, 9, 5}, _}, &1))
 
       assert {:utcTime, ~c"260504123456Z"} = time_choice
     end
@@ -78,7 +79,7 @@ defmodule Pkcs11ex.CMS.SignedAttributesTest do
       {:ok, attrs} = SignedAttributes.build(digest: @digest_sha256, signing_time: future)
 
       {:Attribute, _, [time_choice]} =
-        Enum.find(attrs, &match?({:Attribute, {1, 2, 840, 113549, 1, 9, 5}, _}, &1))
+        Enum.find(attrs, &match?({:Attribute, {1, 2, 840, 113_549, 1, 9, 5}, _}, &1))
 
       assert {:generalTime, ~c"20990102030405Z"} = time_choice
     end

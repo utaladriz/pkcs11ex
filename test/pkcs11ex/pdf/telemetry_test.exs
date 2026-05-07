@@ -1,4 +1,4 @@
-defmodule Pkcs11ex.PDF.TelemetryTest do
+defmodule SignCore.PDF.TelemetryTest do
   @moduledoc """
   Asserts the telemetry contract documented in `docs/specs/api.md`
   §4.2 for the PDF format adapter:
@@ -123,7 +123,7 @@ defmodule Pkcs11ex.PDF.TelemetryTest do
     end
 
     test "policy-class errors classify under :trust_policy in stop meta" do
-      Application.put_env(:pkcs11ex, :trust_policy, Pkcs11ex.PDF.TelemetryTest.RefusingPolicy)
+      Application.put_env(:pkcs11ex, :trust_policy, SignCore.PDF.TelemetryTest.RefusingPolicy)
       on_exit(fn -> Application.delete_env(:pkcs11ex, :trust_policy) end)
 
       # The PDF needs a /Sig dict and a CMS so verify reaches the policy
@@ -146,7 +146,7 @@ defmodule Pkcs11ex.PDF.TelemetryTest do
 
   defmodule RefusingPolicy do
     @moduledoc false
-    @behaviour Pkcs11ex.Policy
+    @behaviour SignCore.Policy
     @impl true
     def resolve(_h, _o), do: {:error, :unknown_signer}
     @impl true
