@@ -140,23 +140,6 @@ defmodule SignCore.XML.Builder do
   end
 
   @doc """
-  Build the full `<ds:Signature>` envelope. Ready to splice into the
-  document at the chosen insertion point.
-
-  Args:
-    * `signed_info_xml` — the `<ds:SignedInfo>` block produced by
-      `signed_info/2`. Used **verbatim** (after exc-c14n) so that
-      the signature is computed over the same bytes the
-      verifier sees.
-    * `signature_value_b64` — base64 of the raw signature.
-    * `x509_chain_b64` — list of base64-encoded DER certs. Leaf first.
-    * `qualifying_properties_xml` — the XAdES `<xades:QualifyingProperties>`
-      element produced by `SignCore.XML.XAdES`.
-    * `:signature_id` — the `Id` attribute on `<ds:Signature>`.
-      Required for XAdES-LT compatibility; v1 just emits a fresh
-      one if not supplied.
-  """
-  @doc """
   Build a standalone `<ds:SignatureValue>` element with the `ds`
   namespace declared inline. Used by the B-T attach path to compute
   the canonical bytes of the signature-value element exactly the way
@@ -173,6 +156,23 @@ defmodule SignCore.XML.Builder do
       "</ds:SignatureValue>"
   end
 
+  @doc """
+  Build the full `<ds:Signature>` envelope. Ready to splice into the
+  document at the chosen insertion point.
+
+  Args:
+    * `signed_info_xml` — the `<ds:SignedInfo>` block produced by
+      `signed_info/2`. Used **verbatim** (after exc-c14n) so that
+      the signature is computed over the same bytes the
+      verifier sees.
+    * `signature_value_b64` — base64 of the raw signature.
+    * `x509_chain_b64` — list of base64-encoded DER certs. Leaf first.
+    * `qualifying_properties_xml` — the XAdES `<xades:QualifyingProperties>`
+      element produced by `SignCore.XML.XAdES`.
+    * `:signature_id` — the `Id` attribute on `<ds:Signature>`.
+      Required for XAdES-LT compatibility; v1 just emits a fresh
+      one if not supplied.
+  """
   @spec signature(String.t(), binary(), [binary()], String.t(), keyword()) :: String.t()
   def signature(
         signed_info_xml,

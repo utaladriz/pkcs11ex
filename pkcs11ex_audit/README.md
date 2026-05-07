@@ -1,6 +1,6 @@
 # pkcs11ex_audit
 
-Append-only hash-chained audit log + RFC 3161 timestamp anchoring for [`pkcs11ex`](../).
+Append-only hash-chained audit log + RFC 3161 timestamp anchoring for [`pkcs11ex`](https://hex.pm/packages/pkcs11ex).
 
 ## What this does
 

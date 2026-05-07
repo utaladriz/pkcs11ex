@@ -2,7 +2,7 @@
 
 Software-key implementations of `SignCore.Signer` for PKCS#12 (`.p12` / `.pfx`) bundles and PKCS#8 PEM private keys.
 
-Part of the [`pkcs11ex` family](https://github.com/utaladriz/pkcs11ex). Pair with [`sign_core`](../sign_core/) to sign PDFs, XMLs, or JWS payloads with filesystem-resident keys.
+Part of the [`pkcs11ex` family](https://github.com/utaladriz/pkcs11ex). Pair with [`sign_core`](https://hex.pm/packages/sign_core) to sign PDFs, XMLs, or JWS payloads with filesystem-resident keys.
 
 ## When to use
 
@@ -11,7 +11,7 @@ Part of the [`pkcs11ex` family](https://github.com/utaladriz/pkcs11ex). Pair wit
 - Dev/test environments where standing up a SoftHSM2 instance is overkill
 - Migration paths from legacy systems that ship `.p12` instead of HSM access
 
-If your production deployment runs against a hardware HSM, use [`pkcs11ex`](../) instead — keep `soft_signer` out of the dep tree to enforce "no software signing" at the package boundary.
+If your production deployment runs against a hardware HSM, use [`pkcs11ex`](https://hex.pm/packages/pkcs11ex) instead — keep `soft_signer` out of the dep tree to enforce "no software signing" at the package boundary.
 
 ## PKCS#12
 

@@ -109,7 +109,7 @@ defmodule SignCore.PDF do
   Verify a PAdES-signed PDF.
 
   Returns `{:ok, subject_id}` where `subject_id` is whatever the
-  configured `SignCore.Policy.validate/3` returned. The verify
+  configured `c:SignCore.Policy.validate/3` returned. The verify
   pipeline runs in this order — every step is a checkpoint that can
   refuse the signature with the documented error class:
 
