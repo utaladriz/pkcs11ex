@@ -9,6 +9,37 @@ defmodule SoftSigner.PKCS12 do
   `:public_key.sign/3` with the right padding for the requested
   algorithm.
 
+  ## Threat model — key material is BEAM-resident
+
+  The decoded RSA private key is held as an Erlang `RSAPrivateKey`
+  record on the returned `%SoftSigner.PKCS12{}` struct. **It lives
+  in BEAM heap memory for the entire lifetime of any reference to
+  the struct** — including indirect references via process state,
+  ETS tables, supervised GenServer state, etc. The BEAM has no
+  zeroization primitive for managed binaries / integers, and the GC
+  may retain freed copies well after the explicit reference is gone.
+
+  Use this signer only when the threat model accepts that the key:
+
+    * is readable by anyone with BEAM-process memory access (other
+      OS processes with `/proc/<pid>/mem` rights, core dumps,
+      hibernation snapshots, swapped pages on a memory-pressured
+      host, attached debuggers);
+    * is recoverable from a kernel core dump or crash dump;
+    * may transiently appear in `:erlang.process_info/2` output for
+      processes holding the struct.
+
+  For threat models that exclude any of these (regulated tax
+  certificates, banking integration keys, anything that must never
+  be software-copyable), use `pkcs11ex` instead — the key stays
+  inside the HSM / token across the PKCS#11 boundary and never
+  enters the BEAM.
+
+  This package is named `soft_signer` precisely to make the
+  hardware-vs-software distinction part of the dependency graph: a
+  deployment that omits `:soft_signer` from its `mix.lock` cannot
+  software-sign by package boundary, not just by configuration.
+
   ## Usage
 
       {:ok, signer} = SoftSigner.PKCS12.load("path/to/bundle.p12", password: "secret")
@@ -98,26 +129,35 @@ defmodule SoftSigner.PKCS12 do
     end
 
     defp do_sign(key, tbs, :PS256) do
-      sig =
-        :public_key.sign(tbs, :sha256, key,
-          rsa_padding: :rsa_pkcs1_pss_padding,
-          rsa_pss_saltlen: 32,
-          rsa_mgf1_md: :sha256
-        )
-
-      {:ok, sig}
+      {:ok,
+       :public_key.sign(tbs, :sha256, key,
+         rsa_padding: :rsa_pkcs1_pss_padding,
+         rsa_pss_saltlen: 32,
+         rsa_mgf1_md: :sha256
+       )}
     rescue
-      e -> {:error, {:soft_sign_failed, Exception.message(e)}}
+      e -> {:error, classify_sign_error(e)}
     end
 
     defp do_sign(key, tbs, :RS256) do
       {:ok, :public_key.sign(tbs, :sha256, key)}
     rescue
-      e -> {:error, {:soft_sign_failed, Exception.message(e)}}
+      e -> {:error, classify_sign_error(e)}
     end
 
     defp do_sign(_key, _tbs, alg),
       do: {:error, {:unsupported_alg, alg}}
+
+    # `:public_key.sign/3` raises specific exception shapes for
+    # well-known failure modes; surface them as typed atoms so callers
+    # can branch on the cause (`SignCore.JWS.verify` already has
+    # `:incompatible_alg`). Anything else falls back to
+    # `{:soft_sign_failed, message}` with the original message
+    # preserved for debugging.
+    defp classify_sign_error(%MatchError{}), do: :incompatible_alg
+    defp classify_sign_error(%ArgumentError{}), do: :incompatible_alg
+    defp classify_sign_error(%FunctionClauseError{}), do: :incompatible_alg
+    defp classify_sign_error(e), do: {:soft_sign_failed, Exception.message(e)}
   end
 
   # ---------- internals ----------

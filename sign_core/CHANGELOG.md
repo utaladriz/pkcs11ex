@@ -4,8 +4,18 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Added
+
+- **`SignCore.X509.validity_window/1`** — returns `{not_before, not_after}` as `DateTime`s decoded from the cert's TBS validity field.
+- **`SignCore.X509.check_validity/2`** — checks whether a given `DateTime` falls within the cert's validity window. Returns `:ok` or `{:error, :cert_not_yet_valid | :cert_expired | :cert_validity_unparseable}`.
+- **`SignCore.PDF.verify/2` cross-checks CMS `signing-time` against the leaf cert's validity window.** A signing-time outside `notBefore..notAfter` now surfaces as `:cert_expired` / `:cert_not_yet_valid`. Default-on; opt out with `check_signing_time: false`. Pass `require_signing_time: true` to also reject CMS envelopes that omit the attribute.
+- **`SignCore.XML.verify/2` cross-checks `<xades:SigningTime>` against the leaf cert's validity window.** Same opt surface as the PDF path.
+
 ### Changed
 
+- **`SignCore.PDF.sign/2` and `SignCore.XML.sign/2` reject missing `:alg`.** Both used to default silently to `:PS256`; the inconsistency with `SignCore.JWS.sign/2` and `Pkcs11ex.sign_bytes/2` (which already rejected) let caller typos (`:algg`) slip through. Now consistent across all four entry points: explicit `:alg` or `{:error, :missing_alg}`. Pre-publish breaking change.
+- **`SignCore.CMS.SignedData.parse/1` disambiguates "issuer found, serial mismatched" from "leaf not in chain".** Returns `:signer_serial_mismatch` for the former (cert rotation without SignerInfo update) vs the prior generic `:leaf_certificate_not_found_in_chain`. Helps debug a real class of operator error.
+- **`SignCore.XML` element / attribute name comparisons handle xmerl's atom + charlist + binary shapes uniformly.** Pre-fix, the helpers assumed atoms only; charlist-named attributes silently returned `nil`, causing downstream `:digest_mismatch` failures with no clear cause.
 - **`SignCore.XML.verify/2` no longer raises on malformed base64.** The five sites that previously called `Base.decode64!/1` (X.509 certs in `<ds:KeyInfo>`, `<ds:SignatureValue>`, `<xades:CertDigest>`, `<xades:IssuerSerialV2>`, reference digest values) now use `Base.decode64/1` and surface tagged errors (`:invalid_x5c`, `:invalid_signature_value`, `:xades_invalid_cert_digest`, `:xades_invalid_issuer_serial_v2`, `:invalid_reference_digest`) through the verify pipeline's `with` chain. Sender-supplied untrusted input must not crash through to telemetry callers.
 - **`SignCore.XML.sign/2` `splice_signature/3` now ignores closing-tag matches inside XML comments and CDATA sections.** Previously, the splice picked the LAST `</root>` substring in the document — a comment legitimately containing `</root>` would shift the splice onto the wrong byte position. The new path collects byte ranges occupied by `<!-- ... -->` and `<![CDATA[ ... ]]>` blocks and rejects matches that fall inside them.
 - **`SignCore.XML.sign/2` B-T attach path no longer destructures `{:ok, _} = ...` from `Canonicalizer.parse/1` and `canonicalize/2`.** The previous `canonical_signature_value/1` would crash on parse / canonicalisation failure; it now propagates the error through the surrounding `:bt_failed` wrapper.

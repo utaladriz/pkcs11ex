@@ -13,6 +13,21 @@ defmodule SoftSigner.PKCS8 do
   and unencrypted PKCS#8, plus the older PKCS#1
   `-----BEGIN RSA PRIVATE KEY-----` format.
 
+  ## Threat model — key material is BEAM-resident
+
+  Same threat model as `SoftSigner.PKCS12` — the decoded RSA private
+  key lives in BEAM heap memory for the lifetime of any reference to
+  the struct. The BEAM cannot zeroize managed terms; the GC may
+  retain freed copies. The key is readable by anyone with BEAM-process
+  memory access (debuggers, `/proc/<pid>/mem`, core dumps, swapped
+  pages, hibernation snapshots).
+
+  Use `pkcs11ex` instead for threat models that require the key to
+  stay on hardware. The package boundary between `:soft_signer` and
+  `:pkcs11ex` is intentional: omitting `:soft_signer` from
+  `mix.lock` prevents software signing by deployment topology, not
+  just by configuration.
+
   ## Usage
 
       # From file paths:
@@ -93,26 +108,33 @@ defmodule SoftSigner.PKCS8 do
     end
 
     defp do_sign(key, tbs, :PS256) do
-      sig =
-        :public_key.sign(tbs, :sha256, key,
-          rsa_padding: :rsa_pkcs1_pss_padding,
-          rsa_pss_saltlen: 32,
-          rsa_mgf1_md: :sha256
-        )
-
-      {:ok, sig}
+      {:ok,
+       :public_key.sign(tbs, :sha256, key,
+         rsa_padding: :rsa_pkcs1_pss_padding,
+         rsa_pss_saltlen: 32,
+         rsa_mgf1_md: :sha256
+       )}
     rescue
-      e -> {:error, {:soft_sign_failed, Exception.message(e)}}
+      e -> {:error, classify_sign_error(e)}
     end
 
     defp do_sign(key, tbs, :RS256) do
       {:ok, :public_key.sign(tbs, :sha256, key)}
     rescue
-      e -> {:error, {:soft_sign_failed, Exception.message(e)}}
+      e -> {:error, classify_sign_error(e)}
     end
 
     defp do_sign(_key, _tbs, alg),
       do: {:error, {:unsupported_alg, alg}}
+
+    # `:public_key.sign/3` raises specific exception shapes for
+    # well-known failure modes (e.g. EC key + PSS opts).
+    # Surface them as typed atoms so callers can branch on the cause;
+    # anything else falls back to `{:soft_sign_failed, message}`.
+    defp classify_sign_error(%MatchError{}), do: :incompatible_alg
+    defp classify_sign_error(%ArgumentError{}), do: :incompatible_alg
+    defp classify_sign_error(%FunctionClauseError{}), do: :incompatible_alg
+    defp classify_sign_error(e), do: {:soft_sign_failed, Exception.message(e)}
   end
 
   # ---------- internals ----------

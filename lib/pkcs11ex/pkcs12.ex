@@ -233,11 +233,32 @@ defmodule Pkcs11ex.PKCS12 do
     end
   end
 
+  # Match the OID *only* in the contexts openssl uses to report it.
+  # Patterns that show up across openssl 1.1 / 3.x:
+  #   - "unknown algorithm <oid>"
+  #   - "unsupported algorithm <oid>"
+  #   - "OID = <oid>"
+  #   - "(OID: <oid>)"
+  # The naive `\d+(?:\.\d+)+` regex matched the first dot-separated
+  # number anywhere — which catches the openssl version string
+  # ("OpenSSL 3.2.1") before it sees the actual OID. Anchoring to the
+  # error wording avoids that false positive.
+  #
+  # An OID has at least 2 arcs and arcs are non-negative integers.
+  # We require ≥ 3 arcs to filter out short version strings.
   defp unsupported_kdf_from_output(output) do
-    case Regex.run(~r/(\d+(?:\.\d+)+)/, output) do
-      [_, oid] -> {:p12_unsupported_kdf, oid}
-      _ -> {:p12_unsupported_kdf, :unknown}
-    end
+    patterns = [
+      ~r/(?:unknown|unsupported)\s+algorithm[^\d]*?(\d+(?:\.\d+){2,})/i,
+      ~r/OID\s*[:=]\s*(\d+(?:\.\d+){2,})/i,
+      ~r/\bOID\s+(\d+(?:\.\d+){2,})/i
+    ]
+
+    Enum.find_value(patterns, {:p12_unsupported_kdf, :unknown}, fn re ->
+      case Regex.run(re, output, capture: :all_but_first) do
+        [oid] -> {:p12_unsupported_kdf, oid}
+        _ -> nil
+      end
+    end)
   end
 
   defp with_tmp(bytes, fun) do

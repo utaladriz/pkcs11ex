@@ -167,9 +167,42 @@ defmodule SignCore.PDF do
          {:ok, cert, chain} <- policy.resolve(header, opts),
          {:ok, subject_id} <-
            policy.validate(cert, chain, Keyword.get(opts, :policy_opts, [])),
+         :ok <- check_signing_time_in_validity(parsed, cert, opts),
          :ok <- check_message_digest(pdf_bytes, byte_range, parsed.message_digest),
          :ok <- verify_signature_math(parsed, cert) do
       {:ok, subject_id}
+    end
+  end
+
+  # CMS `signing-time` (PKCS#9) is the time recorded by the signer.
+  # PAdES verifiers cross-check it against the leaf cert's validity
+  # window — a signing-time outside that window means the cert
+  # claimed to be unexpired-at-signing was actually expired (or
+  # not-yet-valid). Standards-compliant PAdES B-B requires this; we
+  # ran without it pre-fix and accepted such signatures silently.
+  #
+  # Opt-out via `verify(..., check_signing_time: false)` for legacy
+  # interop. Default-on. When the CMS carries no `signing-time`
+  # attribute (rare; some signers omit it), we skip the check —
+  # there's nothing to compare against. Operators who want to
+  # *require* the attribute can pass `require_signing_time: true`.
+  defp check_signing_time_in_validity(parsed, cert, opts) do
+    case Keyword.get(opts, :check_signing_time, true) do
+      false ->
+        :ok
+
+      _ ->
+        case parsed.signing_time do
+          %DateTime{} = signing_time ->
+            X509.check_validity(cert, signing_time)
+
+          nil ->
+            if Keyword.get(opts, :require_signing_time, false) do
+              {:error, :missing_signing_time}
+            else
+              :ok
+            end
+        end
     end
   end
 
@@ -241,7 +274,17 @@ defmodule SignCore.PDF do
     end
   end
 
-  defp fetch_alg(opts), do: {:ok, Keyword.get(opts, :alg, :PS256)}
+  # `:alg` is required across all format adapters (`SignCore.JWS`,
+  # `SignCore.XML`, `Pkcs11ex.sign_bytes/2` all reject missing). PDF
+  # used to default silently to `:PS256` — an inconsistency that let
+  # caller typos (`:algg`) slip through. Now matches the rest of the
+  # surface: explicit or error.
+  defp fetch_alg(opts) do
+    case Keyword.fetch(opts, :alg) do
+      {:ok, alg} when is_atom(alg) -> {:ok, alg}
+      _ -> {:error, :missing_alg}
+    end
+  end
 
   defp check_alg_allowed(alg) do
     allowed = Application.get_env(:pkcs11ex, :allowed_algs, [:PS256])
@@ -564,7 +607,9 @@ defmodule SignCore.PDF do
   # the atoms (`:missing_x5c`, etc.) originated in the JWS module —
   # but for a PDF, a missing cert chain is a CMS / input concern, not
   # a JWS concern.
-  defp error_class(reason) when reason in [:missing_x5c, :invalid_x5c, :disallowed_alg], do: :input
+  defp error_class(reason)
+       when reason in [:missing_x5c, :invalid_x5c, :missing_alg, :disallowed_alg],
+       do: :input
 
   defp error_class(reason)
        when reason in [
@@ -573,8 +618,10 @@ defmodule SignCore.PDF do
               :untrusted_signer,
               :cert_expired,
               :cert_not_yet_valid,
+              :cert_validity_unparseable,
               :chain_invalid,
-              :incomplete_chain
+              :incomplete_chain,
+              :missing_signing_time
             ],
        do: :trust_policy
 

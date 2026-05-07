@@ -82,6 +82,7 @@ defmodule SignCore.XML do
   @xades_local_sp "SignedProperties"
   @xades_local_cert_digest "CertDigest"
   @xades_local_issuer_serial_v2 "IssuerSerialV2"
+  @xades_local_signing_time "SigningTime"
 
   @type sign_result :: {:ok, binary()} | {:error, term()}
   @type verify_result :: {:ok, subject_id :: term()} | {:error, term()}
@@ -216,6 +217,7 @@ defmodule SignCore.XML do
          {:ok, subject_id} <-
            policy.validate(cert, chain, Keyword.get(opts, :policy_opts, [])),
          :ok <- check_xades_cert_binding(ctx, cert),
+         :ok <- check_signing_time_in_validity(ctx, cert, opts),
          :ok <- check_data_reference(xml, root, sig_node, ctx),
          :ok <- check_signed_properties_reference(ctx),
          :ok <- verify_signature_math(ctx, cert) do
@@ -223,9 +225,66 @@ defmodule SignCore.XML do
     end
   end
 
+  # XAdES `<xades:SigningTime>` cross-check against cert validity.
+  # Same rationale as the PAdES PDF check: a signing time outside the
+  # leaf's not-before / not-after window means the cert wasn't actually
+  # valid when the signature was claimed to be made.
+  #
+  # Opt-out via `verify(..., check_signing_time: false)`. Default-on.
+  # When `<xades:SigningTime>` is absent (uncommon for XAdES B-B but
+  # not strictly forbidden by the spec), we skip unless
+  # `require_signing_time: true`.
+  defp check_signing_time_in_validity(ctx, cert, opts) do
+    case Keyword.get(opts, :check_signing_time, true) do
+      false ->
+        :ok
+
+      _ ->
+        case extract_signing_time(ctx.signed_properties_node) do
+          {:ok, signing_time} ->
+            X509.check_validity(cert, signing_time)
+
+          :missing ->
+            if Keyword.get(opts, :require_signing_time, false) do
+              {:error, :missing_signing_time}
+            else
+              :ok
+            end
+
+          {:error, _} = err ->
+            err
+        end
+    end
+  end
+
+  defp extract_signing_time(sp_node) do
+    case collect_descendants(sp_node, @xades_local_signing_time) do
+      [] ->
+        :missing
+
+      [st_node | _] ->
+        iso = st_node |> text_content() |> String.trim()
+
+        case DateTime.from_iso8601(iso) do
+          {:ok, dt, _offset} -> {:ok, dt}
+          _ -> {:error, :xades_signing_time_unparseable}
+        end
+    end
+  end
+
   # ---------- internals ----------
 
-  defp fetch_alg(opts), do: {:ok, Keyword.get(opts, :alg, :PS256)}
+  # `:alg` is required across all format adapters (`SignCore.PDF`,
+  # `SignCore.JWS`, `Pkcs11ex.sign_bytes/2` all reject missing). XML
+  # used to default silently to `:PS256` — an inconsistency that let
+  # caller typos (`:algg`) slip through. Now matches the rest of the
+  # surface: explicit or error.
+  defp fetch_alg(opts) do
+    case Keyword.fetch(opts, :alg) do
+      {:ok, alg} when is_atom(alg) -> {:ok, alg}
+      _ -> {:error, :missing_alg}
+    end
+  end
 
   defp check_alg_allowed(alg) do
     allowed = Application.get_env(:pkcs11ex, :allowed_algs, [:PS256])
@@ -352,8 +411,7 @@ defmodule SignCore.XML do
   end
 
   defp signed_properties?({:xmlElement, name, _, _, _, _, _, _, _, _, _, _}) do
-    name_str = Atom.to_string(name)
-    String.ends_with?(name_str, "SignedProperties")
+    String.ends_with?(elem_name_to_binary(name), "SignedProperties")
   end
 
   defp signed_properties?(_), do: false
@@ -479,7 +537,9 @@ defmodule SignCore.XML do
   # `:input` covers cross-format input-validation reasons that aren't
   # specific to PDF/XML/JWS. Previously misattributed to `:jws` because
   # the atoms (`:missing_x5c`, etc.) originated in the JWS module.
-  defp error_class(reason) when reason in [:missing_x5c, :invalid_x5c, :disallowed_alg], do: :input
+  defp error_class(reason)
+       when reason in [:missing_x5c, :invalid_x5c, :missing_alg, :disallowed_alg],
+       do: :input
 
   defp error_class(reason)
        when reason in [
@@ -488,10 +548,14 @@ defmodule SignCore.XML do
               :untrusted_signer,
               :cert_expired,
               :cert_not_yet_valid,
+              :cert_validity_unparseable,
               :chain_invalid,
-              :incomplete_chain
+              :incomplete_chain,
+              :missing_signing_time
             ],
        do: :trust_policy
+
+  defp error_class(:xades_signing_time_unparseable), do: :xml
 
   defp error_class(:signature_invalid), do: :crypto
   defp error_class({:unsupported_signature_algorithm, _}), do: :crypto
@@ -611,11 +675,18 @@ defmodule SignCore.XML do
   end
 
   defp local_name?({:xmlElement, name, _, _, _, _, _, _, _, _, _, _}, local) do
-    name_str = Atom.to_string(name)
+    name_str = elem_name_to_binary(name)
     name_str == local or String.ends_with?(name_str, ":" <> local)
   end
 
   defp local_name?(_, _), do: false
+
+  # xmerl element names are typically atoms (`:"ds:Signature"` for
+  # namespaced names) but can also be charlists or binaries depending
+  # on parser opts. Same treatment as `attr_name_to_binary/1`.
+  defp elem_name_to_binary(name) when is_atom(name), do: Atom.to_string(name)
+  defp elem_name_to_binary(name) when is_list(name), do: List.to_string(name)
+  defp elem_name_to_binary(name) when is_binary(name), do: name
 
   defp collect_x509_certs(x509_data_node) do
     cert_nodes = collect_descendants(x509_data_node, @ds_local_x509_cert)
@@ -734,25 +805,31 @@ defmodule SignCore.XML do
   end
 
   defp elem_id({:xmlElement, _, _, _, _, _, _, attrs, _, _, _, _}) do
-    case Enum.find(attrs, fn
-           {:xmlAttribute, name, _, _, _, _, _, _, _, _} -> Atom.to_string(name) == "Id"
-         end) do
-      {:xmlAttribute, _, _, _, _, _, _, _, value, _} ->
-        IO.iodata_to_binary([value])
-
-      _ ->
-        nil
-    end
+    find_attr_value(attrs, "Id")
   end
 
   defp attr_value({:xmlElement, _, _, _, _, _, _, attrs, _, _, _, _}, attr_name) do
+    find_attr_value(attrs, attr_name)
+  end
+
+  # xmerl returns attribute names as either atoms or charlists depending
+  # on parser opts and namespace handling. Pre-fix this code only handled
+  # atoms — charlist-named attributes silently returned nil, causing
+  # downstream `:digest_mismatch` failures with no clear cause. Normalise
+  # both shapes to a binary before comparing.
+  defp find_attr_value(attrs, name) do
     case Enum.find(attrs, fn
-           {:xmlAttribute, name, _, _, _, _, _, _, _, _} -> Atom.to_string(name) == attr_name
+           {:xmlAttribute, attr_name, _, _, _, _, _, _, _, _} ->
+             attr_name_to_binary(attr_name) == name
          end) do
       {:xmlAttribute, _, _, _, _, _, _, _, value, _} -> IO.iodata_to_binary([value])
       _ -> nil
     end
   end
+
+  defp attr_name_to_binary(name) when is_atom(name), do: Atom.to_string(name)
+  defp attr_name_to_binary(name) when is_list(name), do: List.to_string(name)
+  defp attr_name_to_binary(name) when is_binary(name), do: name
 
   defp text_content({:xmlElement, _, _, _, _, _, _, _, content, _, _, _}) do
     content

@@ -41,7 +41,42 @@ defmodule Mix.Tasks.Pkcs11ex.ImportP12 do
   prompts for the bundle password and the slot's user PIN with terminal
   echo disabled.
 
-  Both are passed once into the import path and never logged or stored.
+  ## Threat model — plaintext key in BEAM heap
+
+  This task is the only path in `pkcs11ex` that handles a software
+  RSA private key in cleartext. The key flows through BEAM-managed
+  binaries:
+
+    1. `openssl pkcs12 -in <bundle> -nocerts -nodes` extracts the key
+       as a PEM blob into the task's stdout (captured by `System.cmd`
+       into a binary).
+    2. `:public_key.pem_decode/1` and `pem_entry_decode/1` produce an
+       Erlang `RSAPrivateKey` record — modulus, private exponent, the
+       five CRT parameters, all as integers / binaries on the BEAM heap.
+    3. The components are marshaled across the NIF as binaries, then
+       the NIF zeroizes its Rust-side copies (cryptoki + `Zeroizing`).
+
+    Step 1 and step 2 BEAM heap memory cannot be wiped — the BEAM has
+    no zeroization primitive for managed binaries / integers, and the
+    GC may keep them around well past the task's nominal lifetime.
+
+  **The only mitigations are:**
+
+    * Run the task in a short-lived process; let the BEAM exit
+      immediately after the import.
+    * Don't run on a multi-tenant box where another process can read
+      `/proc/<pid>/maps` or trigger a core dump.
+    * Treat the bundle on disk as the canonical secret — the BEAM-heap
+      copy is a temporary echo of it.
+
+  Use `pkcs11ex` directly (HSM-only path) for any key that should
+  never have a software copy in memory. This task is for provisioning
+  fixtures, dev/CI, and importing dormant taxpayer / legal-proxy
+  certificates into write-permitted file-backed tokens.
+
+  Both the bundle password and the user PIN are passed once into the
+  flow and not stored after this task returns. They transit BEAM
+  memory the same way and are subject to the same caveats.
   """
 
   use Mix.Task

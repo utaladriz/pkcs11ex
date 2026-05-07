@@ -4,6 +4,11 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Changed
+
+- **`SoftSigner.PKCS12` and `SoftSigner.PKCS8` `do_sign/3` surface typed atom errors** for well-known sign-side failure modes. EC key with PSS opts, missing OTP padding combos, and similar `:public_key.sign/3` failures now return `{:error, :incompatible_alg}` instead of `{:error, {:soft_sign_failed, "..."}}`. Anything else still falls back to the stringified message wrapper for debugging.
+- **Both signer moduledocs now spell out the BEAM-heap threat model.** Implementation unchanged; the doc makes it explicit that the decoded RSA private key is BEAM-resident for the lifetime of any reference to the struct, and that the package boundary between `:soft_signer` and `:pkcs11ex` is the deployment-topology mitigation.
+
 ## [0.1.0]
 
 Initial release. Software-key implementations of the `SignCore.Signer` protocol.
