@@ -114,4 +114,33 @@ defmodule Pkcs11ex.X509Test do
       refute PkX509.spki_sha256(a) == PkX509.spki_sha256(b)
     end
   end
+
+  describe "validity_window/1 + check_validity/2" do
+    test "validity_window/1 returns {not_before, not_after} DateTimes", %{der: der} do
+      {:ok, cert} = PkX509.from_der(der)
+      assert {%DateTime{} = nb, %DateTime{} = na} = PkX509.validity_window(cert)
+      assert DateTime.compare(nb, na) == :lt
+    end
+
+    test "check_validity/2 returns :ok for a time inside the window", %{der: der} do
+      {:ok, cert} = PkX509.from_der(der)
+      {nb, na} = PkX509.validity_window(cert)
+      mid = DateTime.add(nb, div(DateTime.diff(na, nb), 2))
+      assert :ok = PkX509.check_validity(cert, mid)
+    end
+
+    test "check_validity/2 surfaces :cert_not_yet_valid before not_before", %{der: der} do
+      {:ok, cert} = PkX509.from_der(der)
+      {nb, _} = PkX509.validity_window(cert)
+      before = DateTime.add(nb, -1, :second)
+      assert {:error, :cert_not_yet_valid} = PkX509.check_validity(cert, before)
+    end
+
+    test "check_validity/2 surfaces :cert_expired after not_after", %{der: der} do
+      {:ok, cert} = PkX509.from_der(der)
+      {_, na} = PkX509.validity_window(cert)
+      after_ = DateTime.add(na, 1, :second)
+      assert {:error, :cert_expired} = PkX509.check_validity(cert, after_)
+    end
+  end
 end

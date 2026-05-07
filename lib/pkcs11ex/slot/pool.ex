@@ -36,6 +36,8 @@ defmodule Pkcs11ex.Slot.Pool do
 
   use GenServer
 
+  require Logger
+
   @table :pkcs11ex_slot_pool
 
   def start_link(_opts \\ []) do
@@ -64,14 +66,31 @@ defmodule Pkcs11ex.Slot.Pool do
 
   @doc """
   Register a slot's pool size. Idempotent — re-registering with the same
-  size is a no-op; with a different size, overwrites.
+  size is a no-op; with a different size, overwrites AND logs a warning
+  so a config drift between two startup paths can't slip through silently.
 
   Called once per slot from `Pkcs11ex.SlotSupervisor.init/1`.
   """
   @spec register(atom(), pos_integer()) :: :ok
   def register(slot_ref, size) when is_atom(slot_ref) and is_integer(size) and size >= 1 do
-    :ets.insert(@table, {{:size, slot_ref}, size})
-    :ok
+    case :ets.lookup(@table, {:size, slot_ref}) do
+      [{_, ^size}] ->
+        :ok
+
+      [{_, prev}] ->
+        Logger.warning(
+          "Pkcs11ex.Slot.Pool: re-registering slot #{inspect(slot_ref)} with size #{size} " <>
+            "(was #{prev}). The new size wins, but two callers asking for different pool " <>
+            "sizes is usually a config drift bug."
+        )
+
+        :ets.insert(@table, {{:size, slot_ref}, size})
+        :ok
+
+      [] ->
+        :ets.insert(@table, {{:size, slot_ref}, size})
+        :ok
+    end
   end
 
   @doc """

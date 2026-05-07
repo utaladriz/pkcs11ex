@@ -386,15 +386,32 @@ defmodule SignCore.CMS.SignedData do
   defp match_leaf(certs, {:issuerAndSerialNumber, {:IssuerAndSerialNumber, sid_issuer, serial}}) do
     sid_issuer_der = :public_key.der_encode(:Name, sid_issuer)
 
-    Enum.find(certs, fn %X509{der: der} ->
-      plain = :public_key.pkix_decode_cert(der, :plain)
-      tbs = elem(plain, 1)
-      cert_issuer_der = :public_key.der_encode(:Name, elem(tbs, 4))
-      cert_issuer_der == sid_issuer_der and elem(tbs, 2) == serial
-    end)
-    |> case do
-      nil -> {:error, :leaf_certificate_not_found_in_chain}
-      leaf -> {:ok, leaf}
+    # Two-pass match for better diagnostics. First filter by issuer DN;
+    # if any cert in the chain shares the SignerInfo's issuer but has a
+    # different serial, surface `:signer_serial_mismatch` rather than
+    # the generic "not found" — that's a real signal (counterparty
+    # rotated their cert and forgot to update the SignerInfo) vs.
+    # the noise of "this chain doesn't contain the leaf at all."
+    issuer_matches =
+      Enum.filter(certs, fn %X509{der: der} ->
+        plain = :public_key.pkix_decode_cert(der, :plain)
+        tbs = elem(plain, 1)
+        cert_issuer_der = :public_key.der_encode(:Name, elem(tbs, 4))
+        cert_issuer_der == sid_issuer_der
+      end)
+
+    case Enum.find(issuer_matches, fn %X509{der: der} ->
+           plain = :public_key.pkix_decode_cert(der, :plain)
+           elem(elem(plain, 1), 2) == serial
+         end) do
+      %X509{} = leaf ->
+        {:ok, leaf}
+
+      nil when issuer_matches != [] ->
+        {:error, :signer_serial_mismatch}
+
+      nil ->
+        {:error, :leaf_certificate_not_found_in_chain}
     end
   end
 

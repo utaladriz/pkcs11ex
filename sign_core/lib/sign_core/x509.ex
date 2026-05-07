@@ -28,6 +28,12 @@ defmodule SignCore.X509 do
     Record.extract(:OTPSubjectPublicKeyInfo, from_lib: "public_key/include/public_key.hrl")
   )
 
+  Record.defrecordp(
+    :validity,
+    :Validity,
+    Record.extract(:Validity, from_lib: "public_key/include/public_key.hrl")
+  )
+
   defstruct [:der, :public_key, :otp_cert, :spki_sha256]
 
   @type otp_cert :: tuple()
@@ -91,5 +97,89 @@ defmodule SignCore.X509 do
     plain_spki = elem(plain_tbs, 7)
     spki_der = :public_key.der_encode(:SubjectPublicKeyInfo, plain_spki)
     :crypto.hash(:sha256, spki_der) |> Base.encode16(case: :lower)
+  end
+
+  @doc """
+  Returns the certificate's validity window as `{not_before, not_after}`
+  DateTimes (UTC). The Time CHOICE in X.509 (UTCTime / GeneralizedTime)
+  is decoded per RFC 5280 §4.1.2.5.
+  """
+  @spec validity_window(t()) :: {DateTime.t(), DateTime.t()} | :error
+  def validity_window(%__MODULE__{otp_cert: cert}) do
+    tbs = otp_certificate(cert, :tbsCertificate)
+    val = otp_tbs_certificate(tbs, :validity)
+    not_before = decode_time(validity(val, :notBefore))
+    not_after = decode_time(validity(val, :notAfter))
+
+    case {not_before, not_after} do
+      {%DateTime{} = nb, %DateTime{} = na} -> {nb, na}
+      _ -> :error
+    end
+  rescue
+    _ -> :error
+  end
+
+  @doc """
+  Checks whether `at` falls within the certificate's validity window
+  (inclusive). Returns `:ok` or `{:error, :cert_not_yet_valid |
+  :cert_expired | :cert_validity_unparseable}`.
+  """
+  @spec check_validity(t(), DateTime.t()) :: :ok | {:error, atom()}
+  def check_validity(%__MODULE__{} = cert, %DateTime{} = at) do
+    case validity_window(cert) do
+      {nb, na} ->
+        cond do
+          DateTime.compare(at, nb) == :lt -> {:error, :cert_not_yet_valid}
+          DateTime.compare(at, na) == :gt -> {:error, :cert_expired}
+          true -> :ok
+        end
+
+      :error ->
+        {:error, :cert_validity_unparseable}
+    end
+  end
+
+  # Time CHOICE: {utcTime, charlist} | {generalTime, charlist}.
+  # UTCTime: YYMMDDHHMMSSZ; GeneralizedTime: YYYYMMDDHHMMSSZ.
+  # RFC 5280 §4.1.2.5.1: YY < 50 → 20YY, else 19YY.
+  defp decode_time({:utcTime, charlist}) do
+    case List.to_string(charlist) do
+      <<yy::binary-2, mm::binary-2, dd::binary-2, hh::binary-2, mi::binary-2, ss::binary-2, "Z">> ->
+        full_year =
+          case String.to_integer(yy) do
+            n when n < 50 -> 2000 + n
+            n -> 1900 + n
+          end
+
+        build_datetime(full_year, mm, dd, hh, mi, ss)
+
+      _ ->
+        nil
+    end
+  end
+
+  defp decode_time({:generalTime, charlist}) do
+    case List.to_string(charlist) do
+      <<yyyy::binary-4, mm::binary-2, dd::binary-2, hh::binary-2, mi::binary-2, ss::binary-2,
+        "Z">> ->
+        build_datetime(String.to_integer(yyyy), mm, dd, hh, mi, ss)
+
+      _ ->
+        nil
+    end
+  end
+
+  defp decode_time(_), do: nil
+
+  defp build_datetime(year, mm, dd, hh, mi, ss) do
+    with {:ok, date} <- Date.new(year, String.to_integer(mm), String.to_integer(dd)),
+         {:ok, time} <-
+           Time.new(String.to_integer(hh), String.to_integer(mi), String.to_integer(ss)),
+         {:ok, naive} <- NaiveDateTime.new(date, time),
+         {:ok, dt} <- DateTime.from_naive(naive, "Etc/UTC") do
+      dt
+    else
+      _ -> nil
+    end
   end
 end

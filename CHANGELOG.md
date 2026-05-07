@@ -8,6 +8,12 @@ This file tracks the **`pkcs11ex` Hex package** specifically. The sister package
 
 ### Changed
 
+- **`Pkcs11ex.Slot.Pool.register/2` logs a warning** when the same slot is re-registered with a different pool size. Previously silent — config drift between two startup paths could go unnoticed.
+- **`Pkcs11ex.PKCS12.unsupported_kdf_from_output/1` regex tightened.** The previous `\d+(?:\.\d+)+` matched the first dot-separated number anywhere in the openssl error — including the openssl version string ("OpenSSL 3.2.1"), which would be mis-reported as the unsupported KDF OID. New patterns anchor to "unknown algorithm <oid>", "unsupported algorithm <oid>", "OID = <oid>", "(OID: <oid>)" and require ≥ 3 OID arcs to filter out short version strings.
+- **`Mix.Tasks.Pkcs11ex.ImportP12` moduledoc** spells out the BEAM-heap threat model around the plaintext PKCS#1 RSA private key transit. The implementation is unchanged; the threat model is now explicit so operators can size their mitigations.
+
+### Changed
+
 - **NIF surfaces `CKR_USER_ALREADY_LOGGED_IN` as the typed atom `:user_already_logged_in`** instead of an opaque `{:pkcs11_error, msg}` tuple. `Pkcs11ex.Slot.Server` matches on the atom directly, dropping the substring-match-on-error-message helper that would silently break on cryptoki release wording changes.
 - **Pinned `:rustler` to `~> 0.37.0`** (was `~> 0.36`). `Vec<u8>` encoding shape differs between 0.36 and 0.37; the loose constraint left the NIF return shape ABI-unstable, which had to be papered over with multi-shape return handling in `Pkcs11ex.sign_bytes/2` and `Pkcs11ex.Slot.Server`. Pin removes the ambiguity; redundant return-shape branches dropped.
 - **Configurable `Pkcs11ex.Slot.Server` GenServer.call timeouts** — per-call `:call_timeout` opt and `:slot_call_timeout` application-env knob. Previously hardcoded at 30s for sign/verify/login/logout/status and 60s for `import_keypair`, which silently truncated long-running operations on slow cloud HSMs.
