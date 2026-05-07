@@ -51,9 +51,9 @@ defmodule SignCore.MixProject do
         "GitHub" => @source_url,
         "Changelog" => "#{@source_url}/blob/main/sign_core/CHANGELOG.md"
       },
-      maintainers: ["utaladriz"],
+      maintainers: ["Ubaldo Taladriz"],
       files:
-        ~w(lib .formatter.exs mix.exs README.md CHANGELOG.md) ++
+        ~w(lib .formatter.exs mix.exs README.md LICENSE CHANGELOG.md) ++
           ["lib/sign_core/xml/c14n/LICENSE.md"]
     ]
   end

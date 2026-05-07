@@ -63,8 +63,8 @@ defmodule SoftSigner.MixProject do
         "GitHub" => @source_url,
         "Changelog" => "#{@source_url}/blob/main/soft_signer/CHANGELOG.md"
       },
-      maintainers: ["utaladriz"],
-      files: ~w(lib .formatter.exs mix.exs README.md CHANGELOG.md)
+      maintainers: ["Ubaldo Taladriz"],
+      files: ~w(lib .formatter.exs mix.exs README.md LICENSE CHANGELOG.md)
     ]
   end
 
