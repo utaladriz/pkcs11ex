@@ -1,17 +1,23 @@
 defmodule Pkcs11ex.JWS do
   @moduledoc """
   Convenience wrapper around `SignCore.JWS` pre-configured with the
-  PKCS#11 signer. Supports both detached (RFC 7797, default) and
-  attached (RFC 7515) JWS via the `attached: true` opt; supports
-  optional `:x5c` when a `kid` extra-header is supplied (verifier
-  resolves the cert via `:kid_certs`).
+  PKCS#11 signer. Supports:
+
+    * Detached (RFC 7797, default) and attached (RFC 7515) JWS via
+      the `attached: true` opt.
+    * Optional `:x5c` when a `kid` extra-header is supplied
+      (verifier resolves the cert via `:kid_certs`).
+    * Opt-in B-T-style RFC 3161 signature timestamp via `:tsa_url`
+      — switches output to JWS Flattened JSON Serialization carrying
+      the TST in the unprotected `header` (`x-tst`).
   """
 
   @doc """
   Sign via the configured PKCS#11 slot.
 
   Defaults to detached (RFC 7797). Pass `attached: true` for
-  RFC 7515 attached form (payload encoded in the middle segment).
+  RFC 7515 attached form. Pass `tsa_url: url` to attach an
+  RFC 3161 signature timestamp (output becomes Flattened JSON).
   """
   @spec sign(iodata(), keyword()) :: {:ok, binary()} | {:error, term()}
   def sign(payload, opts) when is_list(opts) do
@@ -20,14 +26,23 @@ defmodule Pkcs11ex.JWS do
 
   @doc """
   Verify. Delegates to `SignCore.JWS.verify/3` — auto-detects
-  detached vs attached from the JWS wire format. For detached,
-  pass the payload as the second arg. For attached, pass `nil` (or
-  the payload, which will be cross-checked).
+  Compact (detached or attached) vs Flattened JSON Serialization
+  from the wire format. For detached, pass the payload as the
+  second arg. For attached, pass `nil` (or the payload, which
+  will be cross-checked).
   """
   @spec verify(binary(), iodata() | nil, keyword()) :: {:ok, term()} | {:error, term()}
   def verify(jws, payload \\ nil, opts \\ []) when is_binary(jws) do
     SignCore.JWS.verify(jws, payload, opts)
   end
+
+  @doc """
+  Extract the RFC 3161 TimeStampToken (DER bytes) from a JSON-form
+  JWS produced with `:tsa_url`. Convenience delegate to
+  `SignCore.JWS.extract_tst/1`.
+  """
+  @spec extract_tst(binary()) :: {:ok, binary()} | {:error, term()}
+  defdelegate extract_tst(jws), to: SignCore.JWS
 
   defp normalise_signer(opts) do
     case Keyword.get(opts, :signer) do

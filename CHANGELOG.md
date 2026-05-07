@@ -6,6 +6,12 @@ This file tracks the **`pkcs11ex` Hex package** specifically. The sister package
 
 ## [Unreleased]
 
+### Added
+
+- **`Pkcs11ex.JWS.sign/2` `:tsa_url` / `:tsa_timeout` opts** — attaches an RFC 3161 signature timestamp (B-T-style) to a JWS. Output switches from Compact to JWS Flattened JSON Serialization (RFC 7515 §7.2.2); the TST rides in the unprotected `header` as `x-tst` (base64-DER). Implementation lives in `sign_core` — see `sign_core/CHANGELOG.md`.
+- **`Pkcs11ex.JWS.extract_tst/1`** — convenience delegate to `SignCore.JWS.extract_tst/1`.
+- **`Pkcs11ex.JWS.verify/3` accepts JSON-form JWS** — auto-detects Compact vs Flattened JSON Serialization from the input; same trust resolution and signature math as before.
+
 ## [0.1.0]
 
 Initial Hex release. The repository hosts a family of packages from a single git tree (Phoenix-style monorepo); this changelog covers the `pkcs11ex` package — the PKCS#11 hardware provider.

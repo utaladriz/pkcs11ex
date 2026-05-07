@@ -449,4 +449,253 @@ defmodule Pkcs11ex.JWSTest do
                Pkcs11ex.JWS.verify(jws, nil, kid_certs: %{kid => ctx.der})
     end
   end
+
+  # ---------- Signature timestamp (B-T) — Flattened JSON Serialization ----------
+
+  describe "JWS B-T — verify on hand-built Flattened JSON envelopes" do
+    setup do
+      Application.put_env(:pkcs11ex, :allowed_algs, [:PS256])
+      Application.put_env(:pkcs11ex, :trust_policy, SignCore.Policy.Allow)
+
+      software_key = X509.PrivateKey.new_rsa(2048)
+      cert = X509.Certificate.self_signed(software_key, "/CN=jws-bt-test", template: :server)
+      der = X509.Certificate.to_der(cert)
+
+      {:ok, software_key: software_key, der: der}
+    end
+
+    test "verify accepts JSON-form attached JWS", %{software_key: key, der: der} do
+      payload = "hello bt jws"
+      tst = <<0xDE, 0xAD, 0xBE, 0xEF>>
+      jws = manually_build_json_jws(payload, key, der, attached: true, tst: tst)
+
+      assert {:ok, :anyone} = Pkcs11ex.JWS.verify(jws, nil)
+    end
+
+    test "verify accepts JSON-form detached JWS with external payload", %{software_key: key, der: der} do
+      payload = "hello bt detached"
+      jws = manually_build_json_jws(payload, key, der, attached: false, tst: <<1, 2, 3>>)
+
+      assert {:ok, :anyone} = Pkcs11ex.JWS.verify(jws, payload)
+    end
+
+    test "verify on JSON-form detached without payload arg returns :missing_payload",
+         %{software_key: key, der: der} do
+      jws = manually_build_json_jws("p", key, der, attached: false, tst: <<>>)
+
+      assert {:error, :missing_payload} = Pkcs11ex.JWS.verify(jws, nil)
+    end
+
+    test "verify on JSON-form attached cross-checks supplied payload (mismatch rejected)",
+         %{software_key: key, der: der} do
+      payload = "hello"
+      jws = manually_build_json_jws(payload, key, der, attached: true, tst: <<>>)
+
+      assert {:error, :payload_mismatch} = Pkcs11ex.JWS.verify(jws, "tampered")
+    end
+
+    test "verify rejects JSON envelope with missing :protected",
+         %{software_key: key, der: der} do
+      payload = "x"
+      good = manually_build_json_jws(payload, key, der, attached: true, tst: <<>>)
+      decoded = Jason.decode!(good)
+      bad = decoded |> Map.delete("protected") |> Jason.encode!()
+
+      assert {:error, :malformed_jws} = Pkcs11ex.JWS.verify(bad, nil)
+    end
+
+    test "verify rejects JSON envelope with missing :signature",
+         %{software_key: key, der: der} do
+      good = manually_build_json_jws("x", key, der, attached: true, tst: <<>>)
+      bad = good |> Jason.decode!() |> Map.delete("signature") |> Jason.encode!()
+
+      assert {:error, :malformed_jws} = Pkcs11ex.JWS.verify(bad, nil)
+    end
+
+    test "verify rejects malformed JSON" do
+      assert {:error, :malformed_jws} = Pkcs11ex.JWS.verify("{not json", nil)
+    end
+
+    test "tampered payload in JSON form is rejected", %{software_key: key, der: der} do
+      payload = "hello"
+      good = manually_build_json_jws(payload, key, der, attached: true, tst: <<>>)
+      decoded = Jason.decode!(good)
+
+      tampered =
+        decoded
+        |> Map.put("payload", Base.url_encode64("evil", padding: false))
+        |> Jason.encode!()
+
+      assert {:error, :signature_invalid} = Pkcs11ex.JWS.verify(tampered, nil)
+    end
+  end
+
+  describe "extract_tst/1" do
+    setup do
+      Application.put_env(:pkcs11ex, :allowed_algs, [:PS256])
+      Application.put_env(:pkcs11ex, :trust_policy, SignCore.Policy.Allow)
+
+      software_key = X509.PrivateKey.new_rsa(2048)
+      cert = X509.Certificate.self_signed(software_key, "/CN=jws-tst-extract", template: :server)
+      der = X509.Certificate.to_der(cert)
+
+      {:ok, software_key: software_key, der: der}
+    end
+
+    test "returns the TST bytes from a JSON-form JWS", %{software_key: key, der: der} do
+      tst = :crypto.strong_rand_bytes(64)
+      jws = manually_build_json_jws("p", key, der, attached: true, tst: tst)
+
+      assert {:ok, ^tst} = Pkcs11ex.JWS.extract_tst(jws)
+    end
+
+    test "returns :no_timestamp for compact-form input", %{software_key: key, der: der} do
+      jws = manually_build_jws("p", key, der)
+      assert {:error, :no_timestamp} = Pkcs11ex.JWS.extract_tst(jws)
+    end
+
+    test "returns :no_timestamp for JSON without x-tst", %{software_key: key, der: der} do
+      jws = manually_build_json_jws("p", key, der, attached: true, tst: <<>>)
+      stripped = jws |> Jason.decode!() |> Map.put("header", %{}) |> Jason.encode!()
+      assert {:error, :no_timestamp} = Pkcs11ex.JWS.extract_tst(stripped)
+    end
+  end
+
+  describe "sign/2 — :tsa_url gate" do
+    setup do
+      Application.put_env(:pkcs11ex, :allowed_algs, [:PS256])
+
+      software_key = X509.PrivateKey.new_rsa(2048)
+      cert = X509.Certificate.self_signed(software_key, "/CN=jws-tsa-gate-test", template: :server)
+      der = X509.Certificate.to_der(cert)
+      signer = %JWSTestSigner{rsa_key: software_key}
+
+      {:ok, signer: signer, der: der}
+    end
+
+    test "an unreachable :tsa_url surfaces as {:bt_failed, _}", ctx do
+      # Localhost on a port nobody listens on — the RFC3161 client should
+      # fail to connect and we should get the timestamp-gate's error wrapper.
+      assert {:error, {:bt_failed, _reason}} =
+               SignCore.JWS.sign("hello",
+                 signer: ctx.signer,
+                 alg: :PS256,
+                 x5c: ctx.der,
+                 tsa_url: "http://127.0.0.1:1/no-tsa-here",
+                 tsa_timeout: 500
+               )
+    end
+  end
+
+  # Live RFC 3161 round-trip against the public DigiCert TSA. Tagged
+  # `:tsa` so it's opt-in like the other TSA-dependent tests in
+  # this repo (PAdES B-T, XAdES B-T).
+  describe "sign/2 + verify/3 — live signature timestamp (DigiCert)" do
+    @describetag :tsa
+
+    setup do
+      Application.put_env(:pkcs11ex, :allowed_algs, [:PS256])
+      Application.put_env(:pkcs11ex, :trust_policy, SignCore.Policy.Allow)
+
+      software_key = X509.PrivateKey.new_rsa(2048)
+      cert = X509.Certificate.self_signed(software_key, "/CN=jws-bt-live", template: :server)
+      der = X509.Certificate.to_der(cert)
+      signer = %JWSTestSigner{rsa_key: software_key}
+
+      {:ok, signer: signer, der: der}
+    end
+
+    test "attached JWS round-trips with TST in unprotected header", ctx do
+      payload = "hello bt live"
+
+      assert {:ok, jws} =
+               SignCore.JWS.sign(payload,
+                 signer: ctx.signer,
+                 alg: :PS256,
+                 x5c: ctx.der,
+                 attached: true,
+                 tsa_url: "http://timestamp.digicert.com",
+                 tsa_timeout: 15_000
+               )
+
+      # Output is JSON Flattened Serialization, not compact.
+      assert String.starts_with?(jws, "{")
+      decoded = Jason.decode!(jws)
+      assert is_binary(decoded["protected"])
+      assert is_binary(decoded["payload"])
+      assert is_binary(decoded["signature"])
+      assert is_binary(decoded["header"]["x-tst"])
+
+      assert {:ok, :anyone} = Pkcs11ex.JWS.verify(jws, nil)
+
+      # TST is parseable DER (a CMS SignedData wrapper, smoke check on length).
+      assert {:ok, tst_der} = Pkcs11ex.JWS.extract_tst(jws)
+      assert byte_size(tst_der) > 100
+    end
+
+    test "detached JWS round-trips with TST", ctx do
+      payload = "hello bt detached live"
+
+      assert {:ok, jws} =
+               SignCore.JWS.sign(payload,
+                 signer: ctx.signer,
+                 alg: :PS256,
+                 x5c: ctx.der,
+                 tsa_url: "http://timestamp.digicert.com",
+                 tsa_timeout: 15_000
+               )
+
+      assert String.starts_with?(jws, "{")
+      decoded = Jason.decode!(jws)
+      # Detached: payload field is omitted from the JSON envelope.
+      refute Map.has_key?(decoded, "payload")
+      assert is_binary(decoded["header"]["x-tst"])
+
+      assert {:ok, :anyone} = Pkcs11ex.JWS.verify(jws, payload)
+    end
+  end
+
+  # ---------- Helper: hand-construct a JSON-form JWS with a software RSA key ----------
+
+  defp manually_build_json_jws(payload, software_key, leaf_der, opts) do
+    attached = Keyword.fetch!(opts, :attached)
+    tst = Keyword.fetch!(opts, :tst)
+
+    base = %{"alg" => "PS256", "x5c" => [Base.encode64(leaf_der)]}
+
+    header_map =
+      if attached, do: base, else: Map.merge(base, %{"b64" => false, "crit" => ["b64"]})
+
+    header_b64 = header_map |> Jason.encode!() |> Base.url_encode64(padding: false)
+
+    signing_input =
+      if attached do
+        payload_b64 = Base.url_encode64(payload, padding: false)
+        <<header_b64::binary, ?., payload_b64::binary>>
+      else
+        <<header_b64::binary, ?., payload::binary>>
+      end
+
+    sig =
+      :public_key.sign(signing_input, :sha256, software_key,
+        rsa_padding: :rsa_pkcs1_pss_padding,
+        rsa_pss_saltlen: 32,
+        rsa_mgf1_md: :sha256
+      )
+
+    sig_b64 = Base.url_encode64(sig, padding: false)
+
+    envelope = %{
+      "protected" => header_b64,
+      "header" => %{"x-tst" => Base.encode64(tst)},
+      "signature" => sig_b64
+    }
+
+    envelope =
+      if attached,
+        do: Map.put(envelope, "payload", Base.url_encode64(payload, padding: false)),
+        else: envelope
+
+    Jason.encode!(envelope)
+  end
 end

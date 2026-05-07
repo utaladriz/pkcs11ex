@@ -1,17 +1,21 @@
 defmodule SignCore.JWS do
   @moduledoc """
   JWS format adapter — detached (RFC 7797) by default, attached
-  (RFC 7515) opt-in.
+  (RFC 7515) opt-in. Supports an opt-in **B-T-style signature
+  timestamp** that switches the wire format from Compact to
+  JWS Flattened JSON Serialization (RFC 7515 §7.2.2).
 
   ## Wire formats
 
-      <header_b64u>..<sig_b64u>            # detached (default, RFC 7797)
-      <header_b64u>.<payload_b64u>.<sig>   # attached (opt-in, RFC 7515)
+      <header_b64u>..<sig_b64u>            # compact, detached (default, RFC 7797)
+      <header_b64u>.<payload_b64u>.<sig>   # compact, attached (RFC 7515)
+      {"protected": "...", "header": {...}, "payload": "...", "signature": "..."}
+                                           # Flattened JSON (RFC 7515 §7.2.2)
 
-  Detached form sets `b64: false` + `crit: ["b64"]` in the
-  protected header and uses the raw payload bytes (not base64url'd)
-  in the signing input. Attached form follows standard RFC 7515
-  framing — payload is base64url-encoded into the middle segment.
+  Compact serialization has no slot for unprotected headers, so
+  the timestamp ride-along requires Flattened JSON form. When
+  `:tsa_url` is set on `sign/2`, the output is JSON; otherwise
+  it stays compact.
 
   ## Sign
 
@@ -20,7 +24,9 @@ defmodule SignCore.JWS do
         alg: :PS256,
         x5c: leaf_der_binary,              # or [leaf_der, intermediate_der, ...]
         attached: false,                   # default — detached
-        extra_headers: %{"kid" => "platform-1"}   # optional
+        extra_headers: %{"kid" => "platform-1"},  # optional
+        tsa_url: "http://timestamp.digicert.com",  # optional — RFC 3161 TSA
+        tsa_timeout: 10_000                # optional — TSA HTTP timeout (ms)
       )
 
   ### Optional `:x5c` with `:kid`
@@ -29,15 +35,45 @@ defmodule SignCore.JWS do
   the verifier will look up the cert by `kid` (via `:kid_certs` opt
   on `verify/3` or a kid-aware policy). RFC 7515 §4.1.4.
 
+  ### Signature timestamping (B-T style)
+
+  When `:tsa_url` is set, `sign/2` fetches an RFC 3161
+  TimeStampToken over `SHA-256(raw signature bytes)` and
+  attaches it as base64-DER under the unprotected `header`'s
+  `x-tst` field in the Flattened JSON envelope:
+
+      {
+        "protected": "<header_b64u>",
+        "header":    {"x-tst": "<base64(DER TimeStampToken)>"},
+        "payload":   "<payload_b64u>",  // omitted in detached form
+        "signature": "<sig_b64u>"
+      }
+
+  Per RFC 7515 §4 unprotected headers are NOT covered by the
+  signature, but the TST is — its hash input is the signature
+  bytes. The same convention used by PAdES/XAdES B-T.
+
+  Requires `pkcs11ex_audit` to be loaded (it provides the
+  RFC 3161 client). If `:tsa_url` is set but the lib isn't
+  loaded, sign returns `{:error, {:bt_failed, :pkcs11ex_audit_not_loaded}}`.
+
   ## Verify
 
       SignCore.JWS.verify(jws, payload, opts \\\\ [])
 
-  Auto-detects detached vs attached from the wire format. For
-  detached, `payload` is required. For attached, `payload` may be
-  `nil` (extracted from the middle segment) or supplied (cross-
-  checked against the embedded payload — `:payload_mismatch` if
-  they differ).
+  Auto-detects from the input:
+
+    * starts with `{` → Flattened JSON Serialization
+    * otherwise      → Compact (detached or attached, by middle segment)
+
+  For detached, `payload` is required. For attached, `payload`
+  may be `nil` (extracted from the embedded segment) or supplied
+  (cross-checked — `:payload_mismatch` if they differ).
+
+  The TST in `header["x-tst"]`, if present, is **not** validated
+  by `verify/3` — callers who want timestamp-chain validation
+  should extract it via `extract_tst/1` and validate against the
+  TSA's chain themselves.
 
   Verification is **software-side** via OTP `:public_key`. No
   PKCS#11 access needed. Trust resolution flows through
@@ -80,9 +116,86 @@ defmodule SignCore.JWS do
              {:alg, alg} | signer_opts
            ]),
          sig_b64u = Base.url_encode64(sig_bytes, padding: false),
-         jws = <<header_b64u::binary, ?., payload_segment::binary, ?., sig_b64u::binary>>,
+         {:ok, jws} <-
+           assemble(attached, header_b64u, payload_segment, sig_b64u, sig_bytes, opts),
          :ok <- maybe_audit(jws, payload_bin, alg, opts) do
       {:ok, jws}
+    end
+  end
+
+  # Without `:tsa_url` → Compact serialization (current behavior).
+  # With `:tsa_url` → Flattened JSON Serialization (RFC 7515 §7.2.2)
+  # carrying the TST in the unprotected `header` as `x-tst`.
+  defp assemble(attached, header_b64u, payload_segment, sig_b64u, sig_bytes, opts) do
+    case Keyword.get(opts, :tsa_url) do
+      nil ->
+        {:ok, <<header_b64u::binary, ?., payload_segment::binary, ?., sig_b64u::binary>>}
+
+      tsa_url when is_binary(tsa_url) ->
+        with {:ok, tst_der} <- fetch_signature_tst(sig_bytes, tsa_url, opts) do
+          envelope = %{
+            "protected" => header_b64u,
+            "header" => %{"x-tst" => Base.encode64(tst_der)},
+            "signature" => sig_b64u
+          }
+
+          envelope =
+            if attached, do: Map.put(envelope, "payload", payload_segment), else: envelope
+
+          {:ok, Jason.encode!(envelope)}
+        end
+    end
+  end
+
+  # Hash input is the raw signature bytes — same convention used by
+  # PAdES/XAdES B-T (`id-aa-signatureTimeStampToken` in CMS, `xades:
+  # SignatureTimeStamp` in XAdES). Reuses the RFC 3161 client from
+  # `pkcs11ex_audit` (optional dep, dispatched via `apply/3` so the
+  # symbol isn't a compile-time requirement).
+  @compile {:no_warn_undefined, [Pkcs11ex.Audit.Anchor.RFC3161]}
+  defp fetch_signature_tst(sig_bytes, tsa_url, opts) do
+    if Code.ensure_loaded?(Pkcs11ex.Audit.Anchor.RFC3161) do
+      timeout = Keyword.get(opts, :tsa_timeout, 10_000)
+      digest = :crypto.hash(:sha256, sig_bytes)
+      mod = Pkcs11ex.Audit.Anchor.RFC3161
+
+      with {:ok, %{der: req_der}} <- apply(mod, :build_request, [digest]),
+           {:ok, body} <- apply(mod, :fetch_token, [tsa_url, req_der, [timeout: timeout]]),
+           {:ok, tst} <- apply(mod, :extract_token, [body]) do
+        {:ok, tst}
+      else
+        {:error, reason} -> {:error, {:bt_failed, reason}}
+      end
+    else
+      {:error, {:bt_failed, :pkcs11ex_audit_not_loaded}}
+    end
+  end
+
+  @doc """
+  Extract the RFC 3161 TimeStampToken (DER bytes) from a JSON-form
+  JWS produced with `:tsa_url`. Returns `{:ok, der}` or
+  `{:error, :no_timestamp}` for compact-form or untimestamped input.
+  """
+  @spec extract_tst(jws()) :: {:ok, binary()} | {:error, term()}
+  def extract_tst(jws) when is_binary(jws) do
+    case classify_format(jws) do
+      :json ->
+        with {:ok, %{"header" => %{"x-tst" => b64}}} <- decode_json(jws),
+             {:ok, der} <- decode_b64(b64) do
+          {:ok, der}
+        else
+          _ -> {:error, :no_timestamp}
+        end
+
+      :compact ->
+        {:error, :no_timestamp}
+    end
+  end
+
+  defp decode_b64(s) do
+    case Base.decode64(s) do
+      {:ok, bin} -> {:ok, bin}
+      :error -> {:error, :malformed_jws}
     end
   end
 
@@ -204,7 +317,7 @@ defmodule SignCore.JWS do
   def verify(jws, payload \\ nil, opts \\ [])
 
   def verify(jws, payload, opts) when is_binary(jws) and is_list(opts) do
-    with {:ok, header_b64u, payload_segment, sig_b64u} <- split_jws(jws),
+    with {:ok, header_b64u, payload_segment, sig_b64u} <- parse_jws(jws),
          {:ok, header_json} <- decode_b64url(header_b64u),
          {:ok, header} <- decode_json(header_json),
          {:ok, mode} <- detect_mode(payload_segment),
@@ -227,6 +340,49 @@ defmodule SignCore.JWS do
          signing_input = build_signing_input(mode, header_b64u, payload_bin, payload_segment),
          :ok <- verify_signature(adapter, signing_input, sig, cert) do
       {:ok, subject_id}
+    end
+  end
+
+  # Format dispatch — JSON (Flattened Serialization, RFC 7515 §7.2.2) or Compact.
+  # JSON envelopes are objects, so a leading `{` (after optional whitespace) is
+  # an unambiguous marker — base64url alphabet doesn't include `{`.
+  defp parse_jws(jws) do
+    case classify_format(jws) do
+      :json -> parse_json_jws(jws)
+      :compact -> split_jws(jws)
+    end
+  end
+
+  defp classify_format(jws) do
+    case String.trim_leading(jws) do
+      <<"{", _::binary>> -> :json
+      _ -> :compact
+    end
+  end
+
+  defp parse_json_jws(jws) do
+    with {:ok, map} when is_map(map) <- decode_json(jws),
+         {:ok, header_b64u} <- fetch_string(map, "protected"),
+         {:ok, sig_b64u} <- fetch_string(map, "signature") do
+      # Per RFC 7515 §7.2.2 the `payload` field is REQUIRED in
+      # Flattened Serialization, but a JWS produced over a
+      # detached payload omits it (RFC 7797 §4.2). Accept either.
+      payload_segment =
+        case Map.get(map, "payload") do
+          s when is_binary(s) -> s
+          _ -> ""
+        end
+
+      {:ok, header_b64u, payload_segment, sig_b64u}
+    else
+      _ -> {:error, :malformed_jws}
+    end
+  end
+
+  defp fetch_string(map, key) do
+    case Map.get(map, key) do
+      s when is_binary(s) and s != "" -> {:ok, s}
+      _ -> {:error, :malformed_jws}
     end
   end
 
@@ -487,7 +643,9 @@ defmodule SignCore.JWS do
       :policy_opts,
       :encoding_context,
       :audit_to,
-      :audit_extra
+      :audit_extra,
+      :tsa_url,
+      :tsa_timeout
     ])
   end
 
