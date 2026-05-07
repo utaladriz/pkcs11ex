@@ -40,3 +40,7 @@ config/*.local.exs
 
 # Demo artifact produced by examples/safenet-etoken/demo.exs
 /signed_demo.pdf
+
+# Hex.publish build artifacts
+*.tar
+**/*.tar
