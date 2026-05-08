@@ -161,6 +161,57 @@ defmodule SignCore.PDF.ReaderTest do
     end
   end
 
+  describe "read_object_body/2" do
+    test "tolerates a leading whitespace byte before the object header" do
+      # Microsoft "Print To PDF" emits xref offsets that point at a
+      # whitespace byte immediately preceding the `N N obj` header.
+      # Adobe, Poppler, qpdf and mupdf all accept this shape.
+      header = "%PDF-1.7\n\n"
+      obj4 = "4 0 obj\n(Identity)\nendobj\n"
+      obj5 = "5 0 obj\n<<>>\nendobj\n"
+      # Note the leading "\n" before "1 0 obj"; the xref entry below points at it.
+      obj1 = "\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"
+      obj2 = "2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n"
+      obj3 = "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>\nendobj\n"
+
+      off4 = byte_size(header)
+      off5 = off4 + byte_size(obj4)
+      # Offset stored in xref points at the "\n" preceding "1 0 obj".
+      off1 = off5 + byte_size(obj5)
+      off2 = off1 + byte_size(obj1)
+      off3 = off2 + byte_size(obj2)
+      xref_off = off3 + byte_size(obj3)
+
+      xref =
+        "xref\n0 6\n" <>
+          "0000000000 65535 f \n" <>
+          String.pad_leading(Integer.to_string(off1), 10, "0") <> " 00000 n \n" <>
+          String.pad_leading(Integer.to_string(off2), 10, "0") <> " 00000 n \n" <>
+          String.pad_leading(Integer.to_string(off3), 10, "0") <> " 00000 n \n" <>
+          String.pad_leading(Integer.to_string(off4), 10, "0") <> " 00000 n \n" <>
+          String.pad_leading(Integer.to_string(off5), 10, "0") <> " 00000 n \n"
+
+      trailer = "trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n#{xref_off}\n%%EOF\n"
+      pdf = header <> obj4 <> obj5 <> obj1 <> obj2 <> obj3 <> xref <> trailer
+
+      assert {:ok, body} = Reader.read_object_body(pdf, off1)
+      assert body == "<< /Type /Catalog /Pages 2 0 R >>"
+
+      # The catalog read path (used by Writer's /AcroForm merge) must
+      # also succeed end-to-end on this shape.
+      assert {:ok, catalog} = Reader.read_catalog_body(pdf)
+      assert catalog =~ "/Type /Catalog"
+      assert catalog =~ "/Pages 2 0 R"
+    end
+
+    test "rejects an offset whose target is neither whitespace nor a header" do
+      pdf = build_simple_pdf()
+
+      assert {:error, {:malformed_pdf, :object_header_invalid}} =
+               Reader.read_object_body(pdf, 0)
+    end
+  end
+
   describe "next_object_number/1" do
     test "returns /Size of the most-recent revision" do
       pdf = build_simple_pdf()
