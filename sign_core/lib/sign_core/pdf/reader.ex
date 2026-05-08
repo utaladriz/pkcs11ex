@@ -128,7 +128,14 @@ defmodule SignCore.PDF.Reader do
     if offset < 0 or offset >= byte_size(pdf) do
       {:error, {:malformed_pdf, :object_offset_out_of_range}}
     else
-      slice = binary_part(pdf, offset, byte_size(pdf) - offset)
+      # Microsoft "Print To PDF" stores xref offsets that include a
+      # leading whitespace byte before the `N N obj` header. Strip it
+      # so the regex still anchors at the digits — Adobe, Poppler, qpdf
+      # and mupdf all tolerate this shape.
+      slice =
+        pdf
+        |> binary_part(offset, byte_size(pdf) - offset)
+        |> ltrim()
 
       case Regex.run(~r/^\d+\s+\d+\s+obj\b/, slice, return: :index) do
         [{0, header_len}] ->
