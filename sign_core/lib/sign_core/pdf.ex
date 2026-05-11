@@ -211,9 +211,14 @@ defmodule SignCore.PDF do
   defp build_cms(%Writer{signed_input: signed_input}, x5c_der_list, alg, opts) do
     digest = :crypto.hash(:sha256, signed_input)
     signing_time = Keyword.get(opts, :signing_time, DateTime.utc_now())
+    [leaf_der | _] = x5c_der_list
 
     with {:ok, signed_attrs} <-
-           SignedAttributes.build(digest: digest, signing_time: signing_time),
+           SignedAttributes.build(
+             digest: digest,
+             signing_time: signing_time,
+             leaf_cert_der: leaf_der
+           ),
          {:ok, tbs} <- SignedAttributes.to_be_signed(signed_attrs),
          {:ok, signer} <- fetch_signer(opts),
          signer_opts = signer_opts(opts, alg),

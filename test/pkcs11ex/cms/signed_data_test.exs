@@ -182,6 +182,45 @@ defmodule SignCore.CMS.SignedDataTest do
       assert leaf.der == ctx.leaf.der
     end
 
+    test "signing-certificate-v2 (PAdES B-B) survives the full CMS round-trip", ctx do
+      digest = :crypto.hash(:sha256, "pades-b-b round trip")
+      leaf_der = ctx.leaf.der
+      expected_cert_hash = :crypto.hash(:sha256, leaf_der)
+      scv2_oid = {1, 2, 840, 113_549, 1, 9, 16, 2, 47}
+
+      {:ok, attrs} =
+        SignedAttributes.build(digest: digest, leaf_cert_der: leaf_der)
+
+      sig = sign_attrs!(attrs, ctx.rsa_priv)
+
+      {:ok, der} =
+        SignedData.build(attrs, sig,
+          certificates: [ctx.leaf],
+          digest_algorithm: :sha256,
+          signature_algorithm: :rsa_sha256
+        )
+
+      {:ok, parsed} = SignedData.parse(der)
+
+      attr = Enum.find(parsed.signed_attrs, &match?({:Attribute, ^scv2_oid, _}, &1))
+
+      assert attr,
+             "PAdES B-B conformance: id-aa-signingCertificateV2 must be present in signedAttrs"
+
+      {:Attribute, ^scv2_oid, [opaque]} = attr
+
+      scv2_der =
+        case opaque do
+          {:asn1_OPENTYPE, bytes} -> bytes
+          bytes when is_binary(bytes) -> bytes
+        end
+
+      assert <<0x30, 0x26, 0x30, 0x24, 0x30, 0x22, 0x04, 0x20, cert_hash::binary-size(32)>> =
+               scv2_der
+
+      assert cert_hash == expected_cert_hash
+    end
+
     test "to_be_signed bytes round-trip the signature math via :public_key.verify", ctx do
       digest = :crypto.hash(:sha256, "verify path")
       {:ok, attrs} = SignedAttributes.build(digest: digest)

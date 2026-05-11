@@ -25,6 +25,14 @@ defmodule SignCore.CMS.OIDs do
   # CAdES B-T attribute.
   @id_aa_signature_timestamp {1, 2, 840, 113_549, 1, 9, 16, 2, 14}
 
+  # `id-aa-signingCertificateV2` per RFC 5035 §3 / ESS update. Carries
+  # an `ESSCertIDv2` over the signing cert so the verifier can bind the
+  # signature to a specific certificate by hash. Mandatory signed
+  # attribute under ETSI EN 319 142-1 §5.3 (PAdES B-B) — without it,
+  # Adobe Acrobat refuses to validate the signature even when the math
+  # checks out.
+  @id_aa_signing_certificate_v2 {1, 2, 840, 113_549, 1, 9, 16, 2, 47}
+
   # NIST hash algorithms — `2.16.840.1.101.3.4.2.*`
   @id_sha256 {2, 16, 840, 1, 101, 3, 4, 2, 1}
   @id_sha384 {2, 16, 840, 1, 101, 3, 4, 2, 2}
@@ -66,4 +74,7 @@ defmodule SignCore.CMS.OIDs do
 
   @doc "`id-aa-signatureTimeStampToken` PKCS#9/SMIME attribute — RFC 3161 §3.3.4."
   def id_aa_signature_timestamp, do: @id_aa_signature_timestamp
+
+  @doc "`id-aa-signingCertificateV2` PKCS#9/SMIME attribute — RFC 5035 §3."
+  def id_aa_signing_certificate_v2, do: @id_aa_signing_certificate_v2
 end

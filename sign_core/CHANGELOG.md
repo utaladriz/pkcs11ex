@@ -4,6 +4,13 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+## [0.1.2] — 2026-05-11
+
+### Fixed
+
+- **PAdES B-B conformance: `SignCore.PDF.sign/2` now emits the ESS `signing-certificate-v2` signed attribute** (`id-aa-signingCertificateV2`, OID `1.2.840.113549.1.9.16.2.47`, RFC 5035 §3). ETSI EN 319 142-1 §5.3 requires this attribute for PAdES B-B; without it, Adobe Acrobat refuses to validate the signature (`At least one signature is invalid`) even when the underlying RSA-PSS math verifies and the leaf certificate chains to a trusted CA. Poppler `pdfsig` only checks the signature math, so the gap hid behind unit-level verification and our existing conformance test suite. Output emitted by `0.1.0` and `0.1.1` is non-conformant — re-sign affected documents with `0.1.2`. The minimal-shape `ESSCertIDv2` (default `sha-256` `hashAlgorithm`, `certHash = SHA-256(leaf_DER)`, `issuerSerial` omitted) is what Acrobat and the EU DSS validator accept.
+- **`SignCore.CMS.SignedAttributes.build/1` accepts `:leaf_cert_der` and `:signing_certificate` opts.** `:leaf_cert_der` triggers the new attribute (default-on); pass `signing_certificate: false` to suppress it for callers that need bit-for-bit reproducibility with pre-fix output. The XAdES path (`<xades:SigningCertificateV2>`) already had this; only the CAdES/PAdES side was missing it.
+
 ## [0.1.1] — 2026-05-08
 
 ### Fixed
