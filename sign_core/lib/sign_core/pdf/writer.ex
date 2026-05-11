@@ -143,11 +143,23 @@ defmodule SignCore.PDF.Writer do
              locate_contents_placeholder(provisional_pdf, object_offsets, sig_obj) do
         contents_length = placeholder_size * 2
 
+        # The /Contents value (a PDF hex string) spans `<...>`
+        # inclusively per PDF 1.7 §7.3.4.3. /ByteRange excludes the
+        # ENTIRE value, not just the hex digits — `<` and `>` are
+        # part of the hole. Pre-0.1.4 we included them as the last
+        # byte of the 1st signed chunk / first byte of the 2nd, which
+        # is internally consistent (our verify path agrees with our
+        # sign path) but disagrees with every other PAdES signer
+        # (PDFBox, iText, Acrobat) and is rejected by the EU DSS
+        # validator with "/ByteRange dictionary is not consistent".
+        lt_offset = contents_offset - 1
+        after_gt_offset = contents_offset + contents_length + 1
+
         byte_range = [
           0,
-          contents_offset,
-          contents_offset + contents_length,
-          byte_size(provisional_pdf) - (contents_offset + contents_length)
+          lt_offset,
+          after_gt_offset,
+          byte_size(provisional_pdf) - after_gt_offset
         ]
 
         case patch_byte_range(provisional_pdf, byte_range) do
