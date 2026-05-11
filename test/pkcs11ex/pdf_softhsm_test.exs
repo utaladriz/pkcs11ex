@@ -116,8 +116,13 @@ defmodule Pkcs11ex.PDFSofthsmTest do
     # /Contents extracted from the signed file decodes as id-signedData.
     {byte_range, contents_hex} = extract_signature_artifacts(signed_pdf)
     [_a, b, c, d] = byte_range
-    assert c == b + byte_size(contents_hex)
-    assert b + byte_size(contents_hex) + d == byte_size(signed_pdf)
+    # /ByteRange excludes the entire `<...>` hex-string value per PDF
+    # 1.7 §12.8.3.3.1 — `<` and `>` are part of the unsigned hole, not
+    # just the hex digits between them.
+    assert c == b + byte_size(contents_hex) + 2
+    assert c + d == byte_size(signed_pdf)
+    assert binary_part(signed_pdf, b, 1) == "<"
+    assert binary_part(signed_pdf, c - 1, 1) == ">"
 
     cms_padded = decode_hex_strict_upper(contents_hex)
     cms_der = strip_trailing_zero_padding(cms_padded)

@@ -4,6 +4,12 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+## [0.1.4] — 2026-05-11
+
+### Fixed
+
+- **PDF `/ByteRange` now excludes the `<` and `>` delimiters of the `/Contents` hex string** per PDF 1.7 §12.8.3.3.1 / §7.3.4.3. `SignCore.PDF.Writer.prepare/2` was setting `byte_range[1]` to the offset of the first hex digit (so `<` ended up as the last byte of the first signed chunk) and `byte_range[2]` to the offset of `>` (so `>` was the first byte of the second). The shape was internally consistent — Poppler `pdfsig` accepted it because `pdfsig` only checks that the embedded `messageDigest` matches whatever bytes `/ByteRange` says — but every other PAdES implementation (PDFBox, iText, Acrobat, the EU DSS validator) treats the entire `<...>` value as the unsigned hole and rejects the output. DSS surfaced this as `FORMAT_FAILURE` with "The /ByteRange dictionary is not consistent!" and "The reference data object is not intact!"; Adobe Acrobat refused to render the Signature Panel and showed `At least one signature is invalid`. After the fix, `pdf[byte_range[1]] == '<'` and `pdf[byte_range[2] - 1] == '>'` — both delimiters are part of the hole, matching the convention every other signer uses. `SignCore.PDF.verify/2` reads `/ByteRange` from the PDF directly, so it verifies signatures emitted by both pre-`0.1.4` and post-`0.1.4` paths transparently — only the writer side changes.
+
 ## [0.1.3] — 2026-05-11
 
 ### Changed

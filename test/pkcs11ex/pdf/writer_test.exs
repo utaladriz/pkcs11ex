@@ -32,20 +32,23 @@ defmodule SignCore.PDF.WriterTest do
       assert head.prev != nil
     end
 
-    test "byte_range partitions the PDF cleanly around the hex placeholder" do
+    test "byte_range partitions the PDF cleanly around the /Contents hex string" do
       base = build_simple_pdf()
       {:ok, prepared} = Writer.prepare(base, placeholder_size: 1024)
 
       [a, b, c, d] = prepared.byte_range
       assert a == 0
-      assert b == prepared.contents_offset
-      assert c == prepared.contents_offset + prepared.contents_length
+      # b is the offset of '<'; c is the offset one past '>'. The
+      # /Contents value (everything between '<' and '>', delimiters
+      # included per PDF 1.7 §7.3.4.3) is the hole.
+      assert b == prepared.contents_offset - 1
+      assert c == prepared.contents_offset + prepared.contents_length + 1
       assert d == byte_size(prepared.pdf) - c
 
-      # The bytes inside [b..c) are exactly the placeholder hex (zeros)
-      placeholder_region = binary_part(prepared.pdf, b, c - b)
-      assert byte_size(placeholder_region) == prepared.contents_length
-      assert placeholder_region == :binary.copy("0", prepared.contents_length)
+      # The hole is exactly `<` + placeholder hex + `>` (zero-filled).
+      hole = binary_part(prepared.pdf, b, c - b)
+      assert byte_size(hole) == prepared.contents_length + 2
+      assert hole == "<" <> :binary.copy("0", prepared.contents_length) <> ">"
     end
 
     test "signed_input is exactly the concatenation of the two byte_range slices" do
@@ -94,6 +97,26 @@ defmodule SignCore.PDF.WriterTest do
       [_a, b, c, d] = prepared.byte_range
       expected = "/ByteRange [0 #{pad10(b)} #{pad10(c)} #{pad10(d)}]"
       assert :binary.match(prepared.pdf, expected) != :nomatch
+    end
+
+    test "byte_range excludes the '<' and '>' delimiters of the /Contents hex string (PDF 1.7 §12.8.3.3.1)" do
+      base = build_simple_pdf()
+      {:ok, prepared} = Writer.prepare(base, placeholder_size: 1024)
+
+      [_a, b, c, _d] = prepared.byte_range
+
+      # The first signed chunk must END just before '<', and the second
+      # must BEGIN just after '>'. The /Contents value (the entire
+      # `<...>` hex-string PDF object) is the hole — not part of the
+      # signed range. PDFBox, iText, Acrobat and the EU DSS validator
+      # all enforce this; we previously included '<' as the last byte
+      # of the 1st chunk and '>' as the first byte of the 2nd, which
+      # DSS rejected with "/ByteRange dictionary is not consistent".
+      assert binary_part(prepared.pdf, b, 1) == "<",
+             "pdf[byte_range[1]] must be '<' — the start of the unsigned hole"
+
+      assert binary_part(prepared.pdf, c - 1, 1) == ">",
+             "pdf[byte_range[2] - 1] must be '>' — the end of the unsigned hole"
     end
 
     test "/SubFilter is /ETSI.CAdES.detached (ETSI EN 319 142-1 §6.2.1)" do
