@@ -167,10 +167,45 @@ defmodule SignCore.PDF do
          {:ok, cert, chain} <- policy.resolve(header, opts),
          {:ok, subject_id} <-
            policy.validate(cert, chain, Keyword.get(opts, :policy_opts, [])),
+         :ok <- check_signing_certificate_v2(parsed, cert, opts),
          :ok <- check_signing_time_in_validity(parsed, cert, opts),
          :ok <- check_message_digest(pdf_bytes, byte_range, parsed.message_digest),
          :ok <- verify_signature_math(parsed, cert) do
       {:ok, subject_id}
+    end
+  end
+
+  # ESS `signing-certificate-v2` (RFC 5035 §3) binds the signature to
+  # the leaf cert by hash. ETSI EN 319 142-1 §6.4 requires verifiers
+  # to confirm `certHash == SHA-256(leaf_DER)` (or the matching hash
+  # for an explicit `hashAlgorithm`). The check is symmetric to what
+  # `SignCore.PDF.sign/2` emits in 0.1.2+.
+  #
+  # Opt-out via `verify(..., check_signing_certificate_v2: false)`.
+  # When the attribute is absent we skip by default — 0.1.0 / 0.1.1
+  # PDFs do not carry it, and breaking their verify path on a patch
+  # bump is the worse failure mode. Operators who want strict ETSI
+  # B-B conformance pass `require_signing_certificate_v2: true`.
+  defp check_signing_certificate_v2(parsed, cert, opts) do
+    case Keyword.get(opts, :check_signing_certificate_v2, true) do
+      false ->
+        :ok
+
+      _ ->
+        case SignedAttributes.verify_signing_certificate_v2(parsed.signed_attrs, cert.der) do
+          :ok ->
+            :ok
+
+          :missing ->
+            if Keyword.get(opts, :require_signing_certificate_v2, false) do
+              {:error, :missing_signing_certificate_v2}
+            else
+              :ok
+            end
+
+          {:error, _} = err ->
+            err
+        end
     end
   end
 
@@ -405,8 +440,9 @@ defmodule SignCore.PDF do
   end
 
   defp parse_contents(dict_body) do
-    # /Contents is a hex string per PAdES B-B (the SubFilter
-    # /adbe.pkcs7.detached requires it). Whitespace inside the hex
+    # /Contents is a hex string per PAdES B-B — both legacy
+    # /adbe.pkcs7.detached (pre-ETSI) and /ETSI.CAdES.detached
+    # SubFilters require hex encoding. Whitespace inside the hex
     # is permitted by PDF (§7.3.4.3) but our Writer never emits any;
     # we still strip whitespace from inside the brackets to tolerate
     # third-party PDFs that include line breaks.

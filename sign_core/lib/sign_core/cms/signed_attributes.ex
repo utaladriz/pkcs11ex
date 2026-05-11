@@ -140,6 +140,134 @@ defmodule SignCore.CMS.SignedAttributes do
     Codec.encode(:SignedAttributes, attrs)
   end
 
+  @doc """
+  Verify the ESS `signing-certificate-v2` attribute against the
+  presented leaf certificate. Symmetric to what `build/1` emits when
+  `:leaf_cert_der` is supplied.
+
+  Returns:
+
+    * `:ok` when the attribute is present and `certHash` matches the
+      leaf — i.e., the attribute genuinely binds the signature to
+      `leaf_cert_der`.
+    * `:missing` when no `signing-certificate-v2` attribute is in
+      `signed_attrs`. Pre-0.1.2 PAdES output from this library, and
+      legacy PKCS#7 signatures, fall here. The caller decides whether
+      `:missing` should be treated as `:ok` (lenient) or as an error
+      (strict ETSI EN 319 142-1 §6.4 conformance).
+    * `{:error, reason}` when the attribute is present but malformed,
+      mismatched, or carries an unsupported `hashAlgorithm`. Reasons:
+        - `:signing_certificate_v2_mismatch` — `certHash` doesn't match
+          `SHA-256(leaf_cert_der)` (or the matching hash for an
+          explicit `hashAlgorithm`).
+        - `{:unsupported_signing_certificate_v2_hash_algorithm, oid}` —
+          we accept only the SHA-2 family by raw OID match.
+        - `:malformed_signing_certificate_v2` — DER didn't parse as
+          the RFC 5035 §3 structure.
+        - `:unexpected_attribute_shape` — the `Attribute.values` SET
+          wasn't a single OPENTYPE / binary as we emit and the OTP
+          codec round-trips.
+
+  Only the first `ESSCertIDv2` in the SEQUENCE OF is checked — RFC
+  5035 §3 and ETSI EN 319 142-1 §5.3 require the leaf to be first.
+  Subsequent entries (intermediate certs) are out of scope for B-B
+  verification.
+  """
+  @spec verify_signing_certificate_v2([attribute()], binary()) ::
+          :ok | :missing | {:error, term()}
+  def verify_signing_certificate_v2(signed_attrs, leaf_cert_der)
+      when is_list(signed_attrs) and is_binary(leaf_cert_der) do
+    target_oid = OIDs.id_aa_signing_certificate_v2()
+
+    case Enum.find(signed_attrs, fn {:Attribute, oid, _values} -> oid == target_oid end) do
+      nil ->
+        :missing
+
+      {:Attribute, _, [value]} ->
+        with {:ok, cert_hash, hash_alg} <- parse_value(value) do
+          verify_cert_hash(cert_hash, hash_alg, leaf_cert_der)
+        end
+
+      _ ->
+        {:error, :unexpected_attribute_shape}
+    end
+  end
+
+  defp parse_value({:asn1_OPENTYPE, der}), do: parse_signing_certificate_v2_der(der)
+  defp parse_value(der) when is_binary(der), do: parse_signing_certificate_v2_der(der)
+  defp parse_value(_), do: {:error, :unexpected_attribute_shape}
+
+  # SigningCertificateV2 ::= SEQUENCE {
+  #   certs    SEQUENCE OF ESSCertIDv2,
+  #   policies SEQUENCE OF PolicyInformation OPTIONAL  -- ignored
+  # }
+  #
+  # ESSCertIDv2 ::= SEQUENCE {
+  #   hashAlgorithm AlgorithmIdentifier DEFAULT sha-256,
+  #   certHash      OCTET STRING,
+  #   issuerSerial  IssuerSerial OPTIONAL              -- ignored
+  # }
+  defp parse_signing_certificate_v2_der(der) do
+    with {:ok, scv2_body, _} <- der_take_tlv(der, 0x30),
+         {:ok, certs_body, _} <- der_take_tlv(scv2_body, 0x30),
+         {:ok, ess_body, _rest_certs} <- der_take_tlv(certs_body, 0x30),
+         {:ok, hash_alg, body_after_alg} <- maybe_take_hash_algorithm(ess_body),
+         {:ok, cert_hash, _rest} <- der_take_tlv(body_after_alg, 0x04) do
+      {:ok, cert_hash, hash_alg}
+    else
+      _ -> {:error, :malformed_signing_certificate_v2}
+    end
+  end
+
+  defp maybe_take_hash_algorithm(<<0x30, _::binary>> = body) do
+    with {:ok, alg_body, rest} <- der_take_tlv(body, 0x30),
+         {:ok, oid_bytes, _params} <- der_take_tlv(alg_body, 0x06) do
+      {:ok, hash_oid_from_der(oid_bytes), rest}
+    end
+  end
+
+  defp maybe_take_hash_algorithm(body), do: {:ok, :sha256, body}
+
+  @sha256_oid_der <<0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01>>
+  @sha384_oid_der <<0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x02>>
+  @sha512_oid_der <<0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x03>>
+
+  defp hash_oid_from_der(@sha256_oid_der), do: :sha256
+  defp hash_oid_from_der(@sha384_oid_der), do: :sha384
+  defp hash_oid_from_der(@sha512_oid_der), do: :sha512
+  defp hash_oid_from_der(other), do: {:unknown_oid, other}
+
+  defp verify_cert_hash(cert_hash, alg, leaf_der) when alg in [:sha256, :sha384, :sha512] do
+    if :crypto.hash(alg, leaf_der) == cert_hash do
+      :ok
+    else
+      {:error, :signing_certificate_v2_mismatch}
+    end
+  end
+
+  defp verify_cert_hash(_cert_hash, {:unknown_oid, oid}, _leaf_der) do
+    {:error, {:unsupported_signing_certificate_v2_hash_algorithm, oid}}
+  end
+
+  # Minimal DER TLV reader for the structures in
+  # `verify_signing_certificate_v2/2`. Short-form length and 1-byte
+  # long-form (0x81 LL); SigningCertificateV2 + a single ESSCertIDv2
+  # with optional IssuerSerial fits comfortably under 255 bytes.
+  defp der_take_tlv(<<tag, rest::binary>>, expected_tag) when tag == expected_tag do
+    case rest do
+      <<len, content::binary-size(len), tail::binary>> when len < 0x80 ->
+        {:ok, content, tail}
+
+      <<0x81, len, content::binary-size(len), tail::binary>> ->
+        {:ok, content, tail}
+
+      _ ->
+        {:error, :malformed_der}
+    end
+  end
+
+  defp der_take_tlv(_, _), do: {:error, :unexpected_tag}
+
   # ---------- Internals ----------
 
   defp fetch_digest(opts) do

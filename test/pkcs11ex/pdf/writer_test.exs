@@ -96,6 +96,16 @@ defmodule SignCore.PDF.WriterTest do
       assert :binary.match(prepared.pdf, expected) != :nomatch
     end
 
+    test "/SubFilter is /ETSI.CAdES.detached (ETSI EN 319 142-1 §6.2.1)" do
+      base = build_simple_pdf()
+      {:ok, prepared} = Writer.prepare(base)
+
+      assert :binary.match(prepared.pdf, "/SubFilter /ETSI.CAdES.detached") != :nomatch,
+             "PAdES B-B requires /ETSI.CAdES.detached; the legacy /adbe.pkcs7.detached was pre-ETSI"
+
+      refute :binary.match(prepared.pdf, "/SubFilter /adbe.pkcs7.detached") != :nomatch
+    end
+
     test "embeds optional /Reason, /Location, /ContactInfo when supplied" do
       base = build_simple_pdf()
 

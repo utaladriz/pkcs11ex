@@ -4,6 +4,17 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+## [0.1.3] — 2026-05-11
+
+### Changed
+
+- **`SignCore.PDF` `/SubFilter` switched from `/adbe.pkcs7.detached` (pre-ETSI Adobe legacy) to `/ETSI.CAdES.detached`** per ETSI EN 319 142-1 §6.2.1. Acrobat accepts both, but the legacy value causes the EU DSS validator and other strict eIDAS conformance tools to downgrade the level from "PAdES B-B" to "PKCS#7". The verify path was already SubFilter-agnostic (it locates `/Type /Sig` dicts directly), so existing PDFs from 0.1.0–0.1.2 continue to verify unchanged — only new output is affected.
+
+### Added
+
+- **`SignCore.PDF.verify/2` checks the ESS `signing-certificate-v2` attribute** against the resolved leaf cert per ETSI EN 319 142-1 §6.4, symmetric to what 0.1.2's `sign/2` emits. Verifies `certHash == SHA-256(leaf_DER)` (or the matching SHA-2 hash when an explicit `hashAlgorithm` is present). Default-on; missing attribute is tolerated by default for backward compatibility with 0.1.0 / 0.1.1 signatures. Strict ETSI conformance via `require_signing_certificate_v2: true`; opt out entirely with `check_signing_certificate_v2: false`. Mismatched hash surfaces as `:signing_certificate_v2_mismatch`; the bind would already be enforced indirectly via `IssuerAndSerialNumber`, so this is a conformance / hygiene check rather than a new security guarantee.
+- **`SignCore.CMS.SignedAttributes.verify_signing_certificate_v2/2`** — public helper for verify-side ESS `signing-certificate-v2` validation. Returns `:ok`, `:missing`, or `{:error, reason}` so callers can apply their own policy. Parses RFC 5035 §3 minimal form, explicit-`hashAlgorithm` form (SHA-2 family), and tolerates an optional `IssuerSerial`.
+
 ## [0.1.2] — 2026-05-11
 
 ### Fixed
