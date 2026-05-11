@@ -24,9 +24,9 @@ defmodule SignCore.PDF.Writer do
     * a signature field annotation (`/FT /Sig`, `/Subtype /Widget`,
       invisible 0×0 rect) referencing the `/Sig` dict via `/V`;
     * the `/Sig` dict itself: `/Filter /Adobe.PPKLite`,
-      `/SubFilter /adbe.pkcs7.detached`, fixed-width `/ByteRange` and
-      `/Contents` placeholders, plus optional `/M`, `/Reason`,
-      `/Location`.
+      `/SubFilter /ETSI.CAdES.detached` (ETSI EN 319 142-1 §6.2.1),
+      fixed-width `/ByteRange` and `/Contents` placeholders, plus
+      optional `/M`, `/Reason`, `/Location`.
 
   Followed by a fresh xref subsection (one entry per new object number,
   plus one for the re-emitted catalog), trailer with `/Prev` pointing
@@ -245,7 +245,7 @@ defmodule SignCore.PDF.Writer do
       end)
       |> IO.iodata_to_binary()
 
-    "<< /Type /Sig /Filter /Adobe.PPKLite /SubFilter /adbe.pkcs7.detached " <>
+    "<< /Type /Sig /Filter /Adobe.PPKLite /SubFilter /ETSI.CAdES.detached " <>
       "/ByteRange [0 0000000000 0000000000 0000000000] " <>
       "/Contents #{contents_placeholder} " <>
       "/M (#{format_pdf_date(signing_time)})" <>

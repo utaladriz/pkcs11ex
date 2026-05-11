@@ -151,6 +151,73 @@ defmodule SignCore.CMS.SignedAttributesTest do
     end
   end
 
+  describe "verify_signing_certificate_v2/2" do
+    test ":ok when the attribute is present and the certHash matches the supplied leaf" do
+      leaf_der = "round-trip leaf bytes"
+
+      {:ok, attrs} =
+        SignedAttributes.build(digest: @digest_sha256, leaf_cert_der: leaf_der)
+
+      assert :ok = SignedAttributes.verify_signing_certificate_v2(attrs, leaf_der)
+    end
+
+    test ":missing when no signing-certificate-v2 attribute is present" do
+      {:ok, attrs} = SignedAttributes.build(digest: @digest_sha256)
+
+      assert :missing = SignedAttributes.verify_signing_certificate_v2(attrs, "any leaf")
+    end
+
+    test ":signing_certificate_v2_mismatch when certHash doesn't match the supplied leaf" do
+      built_for_leaf = "the leaf the signer committed to"
+      different_leaf = "a different cert presented at verify time"
+
+      {:ok, attrs} =
+        SignedAttributes.build(digest: @digest_sha256, leaf_cert_der: built_for_leaf)
+
+      assert {:error, :signing_certificate_v2_mismatch} =
+               SignedAttributes.verify_signing_certificate_v2(attrs, different_leaf)
+    end
+
+    test "survives an OTP codec round-trip — accepts both OPENTYPE and bare-binary value shapes" do
+      leaf_der = "round-trip leaf"
+
+      {:ok, attrs} =
+        SignedAttributes.build(digest: @digest_sha256, leaf_cert_der: leaf_der)
+
+      {:ok, tbs} = SignedAttributes.to_be_signed(attrs)
+      {:ok, decoded} = Codec.decode(:SignedAttributes, tbs)
+
+      assert :ok = SignedAttributes.verify_signing_certificate_v2(decoded, leaf_der)
+    end
+
+    test "rejects a malformed signing-certificate-v2 DER" do
+      garbage_attr =
+        {:Attribute, @id_aa_signing_certificate_v2, [{:asn1_OPENTYPE, <<0xFF, 0xFF, 0xFF>>}]}
+
+      assert {:error, :malformed_signing_certificate_v2} =
+               SignedAttributes.verify_signing_certificate_v2([garbage_attr], "any leaf")
+    end
+
+    test "rejects an unsupported hashAlgorithm" do
+      leaf_der = "leaf"
+      cert_hash_md5 = :crypto.hash(:md5, leaf_der)
+      # MD5 OID: 1.2.840.113549.2.5 → DER 06 08 2A 86 48 86 F7 0D 02 05
+      md5_alg_id = <<0x30, 0x0A, 0x06, 0x08, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x02, 0x05>>
+
+      ess_cert_id_v2 =
+        <<0x30, byte_size(md5_alg_id) + 2 + byte_size(cert_hash_md5), md5_alg_id::binary, 0x04,
+          byte_size(cert_hash_md5), cert_hash_md5::binary>>
+
+      certs_seq = <<0x30, byte_size(ess_cert_id_v2), ess_cert_id_v2::binary>>
+      scv2_der = <<0x30, byte_size(certs_seq), certs_seq::binary>>
+
+      attr = {:Attribute, @id_aa_signing_certificate_v2, [{:asn1_OPENTYPE, scv2_der}]}
+
+      assert {:error, {:unsupported_signing_certificate_v2_hash_algorithm, _oid}} =
+               SignedAttributes.verify_signing_certificate_v2([attr], leaf_der)
+    end
+  end
+
   describe "to_be_signed/1" do
     test "produces a DER SET (universal tag 0x31), not [0] IMPLICIT (0xA0)" do
       {:ok, attrs} =
