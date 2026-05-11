@@ -13,6 +13,7 @@ defmodule SignCore.CMS.SignedAttributesTest do
   alias SignCore.CMS.{Codec, OIDs, SignedAttributes}
 
   @digest_sha256 :crypto.hash(:sha256, "phase 4a smoke payload")
+  @id_aa_signing_certificate_v2 {1, 2, 840, 113_549, 1, 9, 16, 2, 47}
 
   describe "build/1" do
     test "rejects missing digest" do
@@ -82,6 +83,71 @@ defmodule SignCore.CMS.SignedAttributesTest do
         Enum.find(attrs, &match?({:Attribute, {1, 2, 840, 113_549, 1, 9, 5}, _}, &1))
 
       assert {:generalTime, ~c"20990102030405Z"} = time_choice
+    end
+
+    test "omits signing-certificate-v2 when :leaf_cert_der is not supplied" do
+      {:ok, attrs} = SignedAttributes.build(digest: @digest_sha256)
+
+      refute Enum.any?(attrs, &match?({:Attribute, @id_aa_signing_certificate_v2, _}, &1))
+    end
+
+    test "appends signing-certificate-v2 when :leaf_cert_der is supplied" do
+      leaf_der = "not a real cert but build/1 only hashes it"
+      expected_hash = :crypto.hash(:sha256, leaf_der)
+
+      {:ok, attrs} =
+        SignedAttributes.build(digest: @digest_sha256, leaf_cert_der: leaf_der)
+
+      assert {:Attribute, @id_aa_signing_certificate_v2, [{:asn1_OPENTYPE, der}]} =
+               Enum.find(attrs, &match?({:Attribute, @id_aa_signing_certificate_v2, _}, &1))
+
+      # Minimal SigningCertificateV2 shape, RFC 5035 §3:
+      #   SEQUENCE { SEQUENCE OF { SEQUENCE { OCTET STRING certHash } } }
+      # With SHA-256, all length fields fit in one byte.
+      assert <<0x30, 0x26, 0x30, 0x24, 0x30, 0x22, 0x04, 0x20, cert_hash::binary-size(32)>> =
+               der
+
+      assert cert_hash == expected_hash,
+             "certHash must be SHA-256(leaf_cert_der) per RFC 5035 §3"
+    end
+
+    test ":signing_certificate=false opts out even when :leaf_cert_der is supplied" do
+      {:ok, attrs} =
+        SignedAttributes.build(
+          digest: @digest_sha256,
+          leaf_cert_der: "anything",
+          signing_certificate: false
+        )
+
+      refute Enum.any?(attrs, &match?({:Attribute, @id_aa_signing_certificate_v2, _}, &1))
+    end
+
+    test "signing-certificate-v2 survives the DER round-trip through to_be_signed/decode" do
+      leaf_der = "round-trip leaf"
+      expected_hash = :crypto.hash(:sha256, leaf_der)
+
+      {:ok, attrs} =
+        SignedAttributes.build(digest: @digest_sha256, leaf_cert_der: leaf_der)
+
+      assert {:ok, tbs} = SignedAttributes.to_be_signed(attrs)
+      assert {:ok, decoded} = Codec.decode(:SignedAttributes, tbs)
+
+      {:Attribute, @id_aa_signing_certificate_v2, [opaque]} =
+        Enum.find(decoded, &match?({:Attribute, @id_aa_signing_certificate_v2, _}, &1))
+
+      # OTP doesn't ship a typed entry for this OID, so the values come
+      # back wrapped as raw DER (either as `{:asn1_OPENTYPE, der}` or as
+      # the bare binary, depending on OTP version). Accept both.
+      der =
+        case opaque do
+          {:asn1_OPENTYPE, bytes} -> bytes
+          bytes when is_binary(bytes) -> bytes
+        end
+
+      assert <<0x30, 0x26, 0x30, 0x24, 0x30, 0x22, 0x04, 0x20, cert_hash::binary-size(32)>> =
+               der
+
+      assert cert_hash == expected_hash
     end
   end
 

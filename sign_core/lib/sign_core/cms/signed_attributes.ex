@@ -16,6 +16,15 @@ defmodule SignCore.CMS.SignedAttributes do
       produced, as recorded by the signer (not authoritative — that's
       what RFC 3161 timestamping is for).
 
+  Plus the ESS `signing-certificate-v2` attribute mandated by ETSI EN
+  319 142-1 §5.3 (PAdES B-B) when a leaf certificate is supplied:
+
+    * `signing-certificate-v2` (1.2.840.113549.1.9.16.2.47) — RFC 5035
+      §3 `ESSCertIDv2` binding the signature to the leaf cert by
+      SHA-256 hash. Default-on whenever `:leaf_cert_der` is passed.
+      Without it Adobe Acrobat refuses to validate the signature even
+      when the math is sound.
+
   ## The §5.4 re-tag (no, OTP handles it)
 
   CMS distinguishes two encodings of the same SET-OF Attribute:
@@ -64,7 +73,9 @@ defmodule SignCore.CMS.SignedAttributes do
   @type build_opts :: [
           digest: binary(),
           content_oid: :public_key.oid(),
-          signing_time: DateTime.t()
+          signing_time: DateTime.t(),
+          leaf_cert_der: binary(),
+          signing_certificate: boolean()
         ]
 
   @doc """
@@ -84,13 +95,24 @@ defmodule SignCore.CMS.SignedAttributes do
       Use a different content-type OID for non-detached payloads.
     * `:signing_time` — defaults to `DateTime.utc_now/0`. Truncated to
       seconds; sub-second precision is not encoded (UTCTime granularity).
+    * `:leaf_cert_der` — leaf certificate DER bytes. When supplied (and
+      `:signing_certificate` is not `false`), the ESS
+      `signing-certificate-v2` attribute (RFC 5035 §3) is appended,
+      carrying `SHA-256(leaf_cert_der)` as `certHash`. Required for
+      PAdES B-B conformance per ETSI EN 319 142-1 §5.3 — Adobe Acrobat
+      refuses to validate signatures lacking this attribute.
+    * `:signing_certificate` — `false` to skip emitting the
+      `signing-certificate-v2` attribute even when `:leaf_cert_der` is
+      supplied. Default: `true`. Escape hatch for callers that need
+      bit-for-bit reproducibility with pre-fix output.
 
   Returns a list of `Attribute` tuples — sorted by the OTP codec into
   DER canonical SET order at encode time.
   """
   @spec build(build_opts()) :: {:ok, [attribute()]} | {:error, term()}
   def build(opts) do
-    with {:ok, digest} <- fetch_digest(opts) do
+    with {:ok, digest} <- fetch_digest(opts),
+         {:ok, signing_cert_attrs} <- maybe_signing_certificate_v2(opts) do
       content_oid = Keyword.get(opts, :content_oid, OIDs.id_data())
       signing_time = Keyword.get_lazy(opts, :signing_time, &default_signing_time/0)
 
@@ -99,6 +121,7 @@ defmodule SignCore.CMS.SignedAttributes do
          content_type_attr(content_oid),
          message_digest_attr(digest),
          signing_time_attr(signing_time)
+         | signing_cert_attrs
        ]}
     end
   end
@@ -139,6 +162,67 @@ defmodule SignCore.CMS.SignedAttributes do
 
   defp signing_time_attr(%DateTime{} = dt) do
     {:Attribute, OIDs.id_signing_time(), [encode_time_choice(dt)]}
+  end
+
+  defp maybe_signing_certificate_v2(opts) do
+    cond do
+      Keyword.get(opts, :signing_certificate, true) == false ->
+        {:ok, []}
+
+      leaf = Keyword.get(opts, :leaf_cert_der) ->
+        case signing_certificate_v2_attr(leaf) do
+          {:ok, attr} -> {:ok, [attr]}
+          {:error, _} = err -> err
+        end
+
+      true ->
+        {:ok, []}
+    end
+  end
+
+  # Hand-encoded `SigningCertificateV2` per RFC 5035 §3. Minimal form
+  # omits both the `hashAlgorithm` field (defaults to sha-256) and the
+  # `issuerSerial` field (optional). This is the shape that Adobe
+  # Acrobat and the EU DSS validator accept; including IssuerSerial is
+  # allowed by spec but not required for B-B.
+  #
+  #   SigningCertificateV2 ::= SEQUENCE {
+  #     certs    SEQUENCE OF ESSCertIDv2,
+  #     policies SEQUENCE OF PolicyInformation OPTIONAL  -- omitted
+  #   }
+  #
+  #   ESSCertIDv2 ::= SEQUENCE {
+  #     hashAlgorithm AlgorithmIdentifier DEFAULT sha-256, -- omitted
+  #     certHash      OCTET STRING,
+  #     issuerSerial  IssuerSerial OPTIONAL                -- omitted
+  #   }
+  #
+  # With SHA-256 (32 bytes), the wire form is exactly 40 bytes:
+  #   30 26 30 24 30 22 04 20 <32 bytes>
+  defp signing_certificate_v2_attr(leaf_cert_der) when is_binary(leaf_cert_der) do
+    cert_hash = :crypto.hash(:sha256, leaf_cert_der)
+    ess_cert_id_v2 = der_sequence(der_octet_string(cert_hash))
+    certs_seq = der_sequence(ess_cert_id_v2)
+    signing_cert_v2_der = der_sequence(certs_seq)
+
+    attr =
+      {:Attribute, OIDs.id_aa_signing_certificate_v2(),
+       [{:asn1_OPENTYPE, signing_cert_v2_der}]}
+
+    {:ok, attr}
+  end
+
+  defp signing_certificate_v2_attr(_), do: {:error, :invalid_leaf_cert_der}
+
+  # Minimal DER helpers — only emit the short-form length encoding we
+  # actually need (length < 128). The SigningCertificateV2 over a
+  # SHA-256 hash never exceeds that bound.
+  defp der_octet_string(bytes) when is_binary(bytes) and byte_size(bytes) < 128 do
+    <<0x04, byte_size(bytes), bytes::binary>>
+  end
+
+  defp der_sequence(inner) when is_binary(inner) and byte_size(inner) < 128 do
+    <<0x30, byte_size(inner), inner::binary>>
   end
 
   # RFC 5280 §4.1.2.5 / RFC 5652 §11.3: UTCTime for 1950..2049, GeneralizedTime otherwise.
